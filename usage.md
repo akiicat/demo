@@ -659,7 +659,7 @@ docker run  -v /docker/redis-data:/backup ubuntu ls /backup
 docker run --volumes-from r1 -it ubuntu ls /data
 ```
 
-還可使用 `ro`讓資料夾裡的檔案有完全讀取跟寫入權限，但無法刪除
+還可使用 `ro`讓資料夾裡的檔案只有讀取權限
 
 ```shell
 docker run -v /docker/redis-data:/data:ro -it ubuntu rm -rf /data
@@ -902,11 +902,419 @@ docker run --net=frontend-network2 alpine ping -c1 db
 
 
 
+## Syslog
+
+https://docs.docker.com/config/containers/logging/syslog/
+
+```shell
+docker run -d --name redis-server redis
+docker run -d --name redis-syslog --log-driver=syslog redis
+docker run -d --name redis-none --log-driver=none redis
+```
+
+
+
+```shell
+docker logs redis-server
+docker logs redis-syslog
+docker logs redis-none
+```
+
+
+
+```shell
+docker inspect --format '{{ .HostConfig.LogConfig }}' redis-server
+docker inspect --format '{{ .HostConfig.LogConfig }}' redis-syslog
+docker inspect --format '{{ .HostConfig.LogConfig }}' redis-none
+```
+
+
+
+## 自動重新啟動 Ensuring Uptime 
+
+Docker 認為任何容器退出時，應該以非零的代碼退出。默認情況下，崩潰的容器將保持停止狀態。
+
+這是會 Output 一個 message 然後退出的時候會回傳錯誤 1 代碼的虛擬機。
+
+```shell
+docker run -d --name restart-default scrapbook/docker-restart-example
+```
+
+查看所有的虛擬機，會發現他已經停止運作
+
+```shell
+docker ps -a
+```
+
+顯示他印出一個 output message
+
+```shell
+docker logs restart-default
+```
+
+
+
+在建立 docker 的時候，可以設定自動重試啟動的次數`-restart=on-failure:3`
+
+```shell
+docker run -d --name restart-3 --restart=on-failure:3 scrapbook/docker-restart-example
+```
+
+顯示四個 output message，一次是原本建立時顯示的，跟後來失敗重新啟動的三次
+
+```shell
+docker logs restart-3
+```
+
+
+
+或是可以設定成總是重新啟動崩潰的 docker，直到明確的告訴容器叫他停止。
+
+```shell
+docker run -d --name restart-always --restart=always scrapbook/docker-restart-example
+```
+
+可以透過 log 查看他重新啟動的紀錄
+
+```shell
+docker logs restart-always
+```
+
+
+
+## Docker Metadata & Labels
+
+### 標籤容器
+
+標籤可以附加在容器上，容器可以有很多的標籤，標籤可以在很多的容器中方便尋找
+
+使用 `-l <key>=<value>` 加一個 label 到容器上
+
+```shell
+docker run -l user=12345 -d redis
+```
+
+或者是使用 `--label-file=<filename>` 可以添加多個 label
+
+```
+# labels
+user=123461
+role=cache
+```
+
+```shell
+docker run --label-file=labels -d redis
+```
+
+查看容器標籤
+
+```shell
+docker inspect -f "{{json .Config.Labels }}" <container>
+```
+
+Filter 容器
+
+```shell
+docker ps --filter "label=user=scrapbook"
+```
 
 
 
 
 
+### 標籤映像檔
+
+```shell
+# Dockerfile
+LABEL vendor=Katacoda
+LABEL com.katacoda.version=0.0.5
+LABEL com.katacoda.build-date=2015-07-01T10:47:29Z
+LABEL com.katacoda.private-msg=HelloWorld
+LABEL com.katacoda.course=Docker
+```
+
+查看映像檔標籤
+
+```shell
+docker inspect -f "{{json .ContainerConfig.Labels }}" <images>
+```
+
+Filter 映像檔
+
+```shell
+docker images --filter "label=vendor=Katacoda"
+```
+
+
+
+## Nginx proxy — load balancing containers
+
+有三個東西
+
+- Port 設定 80，確保可以使用 HTTP
+- Socket 用 data container 來讀取 (Google IPC Unix Domain Socket)
+- 設定 DEFAULT_HOST
+
+```shell
+docker run -d -p 80:80 \
+-e DEFAULT_HOST=proxy.example \
+-v /var/run/docker.sock:/tmp/docker.sock:ro \
+--name nginx jwilder/nginx-proxy
+```
+
+這時候請求會得到 503，因為還沒有設定他 Load Balancing 的容器
+
+```shell
+curl http://docker
+```
+
+
+
+建立 Load Balancing 的容器，裡面是用 PHP + Apache Server，然後設定 Apache 的 VIRTUAL_HOST
+
+```shell
+docker run -d -p 80 -e VIRTUAL_HOST=proxy.example katacoda/docker-http-server
+```
+
+這時候在試就會有東西了，多建立幾個可以發現他會以 Round Robin 的方式請求 Server
+
+```shell
+curl http://docker
+```
+
+
+
+可以透過 `/etc/nginx/conf.d/default.conf` 這個檔案查看 nginx load balancing 的設定
+
+```shell
+docker exec nginx cat /etc/nginx/conf.d/default.conf
+docker logs nginx
+```
+
+
+
+## Docker Compose
+
+https://yeasy.gitbooks.io/docker_practice/content/compose/
+
+https://docs.docker.com/compose/compose-file/#build
+
+在使用多個容器時，可能難以管理 Links 跟 Variable，為了解決這個問題可以使用 Docker Compose 的工具來管理容器
+
+可以用於快速部署，像是 Rails。或是運行多個 Docker 容器
+
+`Compose` 中有兩個重要的概念：
+
+- 服務 (`service`)：一個應用的容器，實際上可以包括若干運行相同鏡像的容器實例。
+- 項目 (`project`)：由一組關聯的應用容器組成的一個完整業務單元，在 `docker-compose.yml` 文件中定義。
+
+一個 project 可以有多個 service 所組成，然後 Compose 則管理 Project
+
+```yaml
+# docker-compose.yml
+web:
+  build: .
+```
+
+- `web` 一個 project
+- `build` 一個 service，這邊他會建立當前目的 `Dockerfile` 作為映像檔
+
+
+
+compose 支援所有 docker 的指令，要把兩個容器連接起來的話使用 `links`，也可以加上其他的屬性值。
+
+```yaml
+# docker-compose.yml
+web:
+  build: .
+  links:
+    - redis
+  ports:
+    - "3000"
+    - "8000"
+```
+
+
+
+設定第二個 container
+
+```yaml
+# docker-compose.yml
+redis:
+  image: redis:alpine
+  volumes:
+    - /var/redis/data:/data
+```
+
+
+
+運行 `-d` 參數跟 docker 意思一樣，在背後運行
+
+```shell
+docker-compose up -d
+```
+
+
+
+`docker` 指令只能看一個容器的訊息，`docker-compose` 可以看所有容器的訊息
+
+```shell
+docker-compose ps
+docker-compose logs
+```
+
+
+
+而且也很容易延展容器，scale up、scale down
+
+```shell
+docker-compose scale web=3
+docker-compose scale web=1
+```
+
+
+
+終止所有的容器
+
+```shell
+docker-compose stop
+```
+
+
+
+刪除所有的容器
+
+```shell
+docker-compose rm
+```
+
+
+
+## Metric 
+
+查看容器狀態，CPU 使用率、記憶體使用量、網路使用量、Block I/O、Pids
+
+```shell
+docker stats <container>
+```
+
+
+
+查看多個容器的狀態
+
+```shell
+docker stats <container1> <container2>
+```
+
+
+
+查看所有容器的狀態 `docker ps -q` 會列出所有容器的 id，利用 pipe 將參數傳入，用 `xargs` 接到後傳進 `docker stats`
+
+```shell
+docker ps -q | xargs docker stats
+```
+
+
+
+## 優化映像檔 multi-stage build functionality
+
+非常適合用於 Golang 語言多階段構建，第一階段用較大的 docker 製作 Golang binary 檔，第二階段可以用更小的 binary 檔來部署 
+
+```shell
+# Dockerfile
+# 第一階段編譯 First Stage
+FROM golang:1.6-alpine
+
+RUN mkdir /app
+ADD . /app/
+WORKDIR /app
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
+
+# 第二階段複製編譯好的檔案到新的容器 Second Stage
+FROM alpine
+EXPOSE 80
+CMD ["/app"]
+
+# 從第 0 個映像檔複製檔案 Copy from first stage 
+COPY --from=0 /app/main /app
+```
+
+
+
+這時候建立映像檔後，查看所有映像檔
+
+```shell
+docker build -f Dockerfile.multi -t golang-app .
+docker images
+```
+
+會產生兩個映像檔，有一個名字是沒有被標記的，另一個名字是 golang-app
+
+
+
+如此一來在映像檔內就不必暫存沒有必要的程式碼
+
+```shell
+docker run -d -p 80:80 golang-app
+curl localhost
+```
+
+
+
+## Formatting PS Output
+
+練習用先隨便建立一個容器
+
+```shell
+docker run -d redis
+```
+
+
+
+```shell
+$ docker ps
+CONTAINER ID        IMAGE               COMMAND                  CREATED             STATUS  PORTS               NAMES
+fc719ecf3fa5        redis               "docker-entrypoint.s…"   5 seconds ago       Up 4 seconds  6379/tcp            focused_poitras
+```
+
+
+
+使用 `--format` 可以自訂輸出的訊息
+
+```shell
+$ docker ps --format '{{.Names}} container is using {{.Image}} image'
+focused_poitras container is using redis image
+```
+
+
+
+`table` 是 golang templates 的語言
+
+```shell
+$ docker ps --format 'table {{.Names}}\t{{.Image}}'
+NAMES               IMAGE
+focused_poitras     redis
+```
+
+
+
+`docker ps` 只會顯示容器公開的訊息，要顯示詳細的訊息像是 IP 位置，需使用 `docker inspect`，一樣可以使用 golang 的模板
+
+```shell
+$ docker ps -q | xargs docker inspect --format '{{ .Id }} - {{ .Name }} - {{ .NetworkSettings.IPAddress }}'
+fc719ecf3fa5902c72de98f482ac1a7bba2002156ac8487453d44c93b5fb24ef - /focused_poitras - 172.18.0.2
+```
+
+
+
+## Swarm mode
+
+### 基本觀念
+
+節點 node
+
+- 管理節點 manager node
+- 工作節點 worker node
 
 
 
