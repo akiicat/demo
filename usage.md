@@ -1313,18 +1313,176 @@ fc719ecf3fa5902c72de98f482ac1a7bba2002156ac8487453d44c93b5fb24ef - /focused_poit
 
 節點 node
 
-- 管理節點 manager node
-- 工作節點 worker node
+- 管理節點 manager node (leader)
+- 工作節點 worker node (follower)
+
+
+服務 services
+
+- `replicated services` 按照一定規則在各個工作節點上運行指定個數的任務。
+- `global services` 每個工作節點上運行一個任務
+
+
+
+初始化 docker swarm 的節點
+
+```shell
+docker swarm init
+```
+
+
+
+使用 `join-token` 在第二台機器上紀錄第一台的 token 
+
+```shell
+token=$(docker -H 172.17.0.74:2345 swarm join-token -q worker) && echo $token
+```
+
+
+
+將第二台機器作為第一台 worker 
+
+```shell
+docker swarm join 172.17.0.74:2377 --token $token
+```
+
+
+
+在 manager 上可以看到 node 的狀態
+
+```shell
+docker node ls
+```
+
+
+
+建立 network，因為 node 是透過網路來溝通的
+
+```shell
+docker network create -d overlay skynet
+```
+
+
+
+在 service 上建立 `katacoda/docker-http-server` 
+
+```shell
+docker service create --name http --network skynet --replicas 2 -p 80:80 katacoda/docker-http-server
+```
+
+- `--replicas 2` 建立兩台
+- `--network skynet` 附加在剛剛建立的網路
+- `--name http` 服務名稱是 http
+
+
+
+查看所有的 service
+
+```shell
+docker service ls
+```
+
+
+
+查看某個 service
+
+```shell
+docker service ps http
+docker service inspect --pretty http
+```
 
 
 
 
 
+分別在兩台機器上輸入，可以看到 docker 在運行
+
+```shell
+docker ps
+```
 
 
 
+這時候請求會以 round robin 請求 server
+
+```shell
+curl docker
+```
 
 
 
+詢問當某個機器是否為 manager 節點
+
+```shell
+docker node ps self
+```
 
 
+
+查看某個節點
+
+```shell
+docker node ps $(docker node ls -q | head -n1)
+```
+
+
+
+將 service scale 到五台
+
+```shell
+docker service scale http=5
+```
+
+
+
+## Makefile
+
+範例
+
+```shell
+NAME = benhall/docker-make-demo
+
+default: build
+
+build:
+    docker build -t $(NAME) .
+
+push:
+    docker push $(NAME)
+
+debug:
+    docker run --rm -it $(NAME) /bin/bash
+
+run:
+    docker run --rm $(NAME)
+
+release: build push
+```
+
+
+
+## 清空 container
+
+### List all containers (only IDs)
+
+```
+docker ps -aq
+```
+
+### Stop all running containers
+
+```
+docker stop $(docker ps -aq)
+```
+
+### Remove all containers
+
+```
+docker rm $(docker ps -aq)
+```
+
+### Remove all images
+
+```
+docker rmi $(docker images -q)
+```
