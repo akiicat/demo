@@ -163,7 +163,7 @@ CMD ["/usr/sbin/apachectl", "-D", "FOREGROUND"]
 
 - `ADD` 命令複製本地檔案到映像檔
 - `EXPOSE` 命令向外部開放埠號
-- `CMD` 命令描述容器啟動後執行的程序
+- `CMD` 命令描述容器啟動後執行的程序，`docker run` 如果沒有給參數就會預設執行此命令
 
 
 
@@ -1461,28 +1461,29 @@ release: build push
 
 
 
-## 清空 container
 
-### List all containers (only IDs)
 
-```
-docker ps -aq
-```
 
-### Stop all running containers
 
-```
-docker stop $(docker ps -aq)
-```
 
-### Remove all containers
 
-```
-docker rm $(docker ps -aq)
-```
 
-### Remove all images
 
-```
-docker rmi $(docker images -q)
-```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
