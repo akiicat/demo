@@ -295,6 +295,95 @@ kubectl cp <pod-name>:/path/to/file /path/to/file
 
 然而如果發生 deadlocked 的情況，而無法接收請求，process 因為還在跑，所以狀態又是健康的，要改善這個提供了 application liveness 來做健康狀態的檢查
 
+#### Liveness Probe
+
+- `initialDelaySeconds`：Server 開機後過幾秒才會開始探測健康狀態
+- `timeoutSeconds`：必須在幾秒之內回應探測的請求
+- `periodSeconds`：每幾秒探測一次
+- `failureThreshold`：連續失敗幾次才會重新啟動
+
+```shell
+kubectl apply -f https://github.com/kubernetes-up-and-running/examples/blob/master/5-2-kuard-pod-health.yaml
+```
+
+```yaml
+# kuard-pod-health.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kuard
+spec:
+  containers:
+    - image: gcr.io/kuar-demo/kuard-amd64:1
+      name: kuard
+      livenessProbe:
+        httpGet:
+          path: /healthy
+          port: 8080
+        initialDelaySeconds: 5
+        timeoutSeconds: 1
+        periodSeconds: 10
+        failureThreshold: 3
+      ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+```
+
+##### Type of Health Checks
+
+- TCP
+- HTTP
+
+#### Resource Management
+
+- requests：資源必須使用的最小量
+- limits：資源可以被消耗的最大量
+
+
+
+##### Resource Requests: Minimum Required Resources
+
+定義最小資源，可以是 CPU、記憶體或是 GPU。特別注意，他的資源是限制在每個 Container 而不是每個 Pod
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/5-3-kaurd-pod-resreq.yaml
+```
+
+```yaml
+# kaurd-pod-resreq.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kuard
+spec:
+  containers:
+    - image: gcr.io/kuar-demo/kuard-amd64:1
+      name: kuard
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "128Mi"
+      ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+```
+
+###### Request limit details
+
+想像一個 Pod 裡面有一個 Container，Container 的 requests 是 0.5 CPU。假設我們的 Kubernetes cluster 有 2 CPU，然後在 cluster 裡建立一個 Pod 請求 0.5 CPU。
+
+因為只有一個 Pod 在機器裡，所以我們可以消耗所有 2.0 個可以使用的 CPU，儘管請求的數量只有  0.5 CPU。
+
+如果建立第二個相同 Pod 在同個機器上，這樣每個 Pod 可以獲得 1.0 CPU。
+
+如果建立第三個相同 Pod，每個 Pod 可以獲得 0.66 個 CPU。最後如果建立第四個相同的 Pod，每個 Pod 可以獲得 0.5 CPU。節點的容量將會被佔滿。
+
+CPU 請求的實作是使用 `cpu-shares` functionality in the Linux kernel。
+
+Memory 的請求跟 CPU 的很類似，但還是有一點很重要的不同之處。如果 Container 超過 Memory request，OS 不可能只從 process 移除 memory，因為記憶體已經被 allocated。所以系統發出 Out of Memory，`kubelet` 會終止超過 memory 請求使用量的 Container。這些 Container 會自動的重新啟動，但是 Container 只能消耗更少可用的記憶體。
+
 #### 
 
 
