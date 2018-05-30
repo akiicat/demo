@@ -1476,9 +1476,496 @@ Kubernetes cluster 大多的工作量都是在跑長期的程式，如果只需�
 | Parallel fixed completions | Multiple pods processing a set of work in parallel     | One or more Pods running one or more times until reaching a fixed completion count | 1+          | 1+          |
 | Work queue: parallel Jobs  | Multiple pods processing from a centralized work queue | One or more Pods running once until successful termination   | 1           | 2+          |
 
+### One Shot
+
+跑在一個 Pod 且必須成功一次後終止，如果失敗的話 Job 會再重新建立 Pod 直到成功為止。
+
+有很多方法可以建立 one shot Job，最簡單的是使用`kubectl`指令：
+
+```shell
+$ kubectl run -i oneshot \
+  --image=gcr.io/kuar-demo/kuard-amd64:1 \
+  --restart=OnFailure \
+  -- --keygen-enable \
+     --keygen-exit-on-complete \
+     --keygen-num-to-gen 10
+If you don't see a command prompt, try pressing enter.
+2018/05/29 16:02:41 (ID 0 2/10) Item done: SHA256:8MMtZENDLSCyfzKtzo6/nK06fUxvINufZPU9Qe8hpnc
+2018/05/29 16:02:43 (ID 0 3/10) Item done: SHA256:LafQAc5ePLZEpSl2A2davBHmyszW0wF+Kr53O5JqIyo
+2018/05/29 16:02:51 (ID 0 4/10) Item done: SHA256:qDZcCxjpVXZcBffF2DJqGVwRhwDfyLN0/U+vhDbv4Cs
+2018/05/29 16:02:54 (ID 0 5/10) Item done: SHA256:tvMKs7NJQFqtgXzkPBrLz6cFg78dm6jKTc4r1vCyAFY
+2018/05/29 16:02:57 (ID 0 6/10) Item done: SHA256:8cUlRwT0+eLm7EwYvNeSkvSufqCNLvdRpxKWd9XNu54
+2018/05/29 16:03:00 (ID 0 7/10) Item done: SHA256:tZzNr+Xjg6AA6XT5KHdl7OIeHUyfEGcDLcSQxbINih4
+2018/05/29 16:03:09 (ID 0 8/10) Item done: SHA256:jkgVH3SrDOZuxs7Z4ZgXJWVRPUW8uHf+/pD9qqO2vrU
+2018/05/29 16:03:10 (ID 0 9/10) Item done: SHA256:+zu4ljBKQov99VR7kpII0TyQJ7gkTAMM7eln4uVhMGg
+2018/05/29 16:03:11 (ID 0 10/10) Item done: SHA256:d98hDVAb6CQ6GZmHoKFXYuf9ckIwQfXXAKkEmt/hwZo
+2018/05/29 16:03:11 (ID 0) Workload exiting
+```
+
+- `-i`參數代表這是一個互動的指令。`kubectl`會等到 Job 跑完，然後印出 Job 裡第一個 Pod  的 log。
+- `--restart=OnFailure`告訴`kubectl`建立 Job 的選項。
+- 所有的指令在這個`--`都會變成指令的參數傳進 container 中，我們會用來測試產生 10 組 4096 bit 的 SSH key 然後離開。
+- `kubectl`加上`-i`通常會把第一行 output 吃掉。
+
+Job 跑完之後會繼續留著，所以可以直接看 Pod 跟 Job 的 log。
+
+```shell
+$ kubectl get jobs
+NAME      DESIRED   SUCCESSFUL   AGE
+oneshot   1         1            21m
+```
+
+刪除 Job
+
+```shell
+kubectl delete jobs oneshot
+```
+
+其他建立 one-shot Job 的方法是使用設定檔：
+
+```yaml
+# job-oneshot.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: oneshot
+  labels:
+    chapter: jobs
+spec:
+  template:
+    metadata:
+      labels:
+        chapter: jobs
+    spec:
+      containers:
+      - name: kuard
+        image: gcr.io/kuar-demo/kuard-amd64:1
+        imagePullPolicy: Always
+        args:
+        - "--keygen-enable"
+        - "--keygen-exit-on-complete"
+        - "--keygen-num-to-gen=10"
+      restartPolicy: OnFailure
+```
+
+建立 one-shot Job
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/10-1-job-oneshot.yaml
+```
 
 
 
+```shell
+$ kubectl describe jobs oneshot
+Name:           oneshot
+Namespace:      default
+Selector:       controller-uid=cb0d863c-635d-11e8-b926-0242ac110046
+Labels:         chapter=jobs
+Annotations:    kubectl.kubernetes.io/last-applied-configuration={"apiVersion":"batch/v1","kind":"Job","metadata":{"annotations":{},"labels":{"chapter":"jobs"},"name":"oneshot","namespace":"default"},"spec":{"templat...
+Parallelism:    1
+Completions:    1
+Start Time:     Tue, 29 May 2018 16:31:52 +0000
+Pods Statuses:  0 Running / 1 Succeeded / 0 Failed
+Pod Template:
+  Labels:  chapter=jobs
+           controller-uid=cb0d863c-635d-11e8-b926-0242ac110046
+           job-name=oneshot
+  Containers:
+   kuard:
+    Image:      gcr.io/kuar-demo/kuard-amd64:1
+    Port:       <none>
+    Host Port:  <none>
+    Args:
+      --keygen-enable
+      --keygen-exit-on-complete
+      --keygen-num-to-gen=10
+    Environment:  <none>
+    Mounts:       <none>
+  Volumes:        <none>
+Events:
+  Type    Reason            Age   From            Message
+  ----    ------            ----  ----            -------
+  Normal  SuccessfulCreate  3m    job-controller  Created pod: oneshot-54k6q
+```
+
+
+
+```shell
+$ kubectl logs oneshot-54k6q
+2018/05/29 16:31:54 Starting kuard version: v0.7.2-1
+2018/05/29 16:31:54 **********************************************************************
+2018/05/29 16:31:54 * WARNING: This server may expose sensitive
+2018/05/29 16:31:54 * and secret information. Be careful.
+2018/05/29 16:31:54 **********************************************************************
+2018/05/29 16:31:54 Config:
+{
+  "address": ":8080",
+  "debug": false,
+  "debug-sitedata-dir": "./sitedata",
+  "keygen": {
+    "enable": true,
+    "exit-code": 0,
+    "exit-on-complete": true,
+    "memq-queue": "",
+    "memq-server": "",
+    "num-to-gen": 10,
+    "time-to-run": 0
+  },
+  "liveness": {
+    "fail-next": 0
+  },
+  "readiness": {
+    "fail-next": 0
+  },
+  "tls-address": ":8443",
+  "tls-dir": "/tls"
+}
+2018/05/29 16:31:54 Could not find certificates to serve TLS
+2018/05/29 16:31:54 Serving on HTTP on :8080
+2018/05/29 16:31:54 (ID 0) Workload starting
+2018/05/29 16:31:58 (ID 0 1/10) Item done: SHA256:aLWzOXlZCNE/dYI0DFLjcqs/LCQjveVO5LXlmtZGGFI
+2018/05/29 16:32:00 (ID 0 2/10) Item done: SHA256:yzqyIMeYxzW9KVik0cDZyrbAM6KOhJIeoH7KdUmAWKg
+2018/05/29 16:32:02 (ID 0 3/10) Item done: SHA256:fyJFBJUOxb6NY/Q7rUeB4uqW15rdeWqBrTizmZ+MBck
+2018/05/29 16:32:07 (ID 0 4/10) Item done: SHA256:SFZpmwHucyndvHgFrS33bHQ9lgfIEJGIKdCdHkSGqNc
+2018/05/29 16:32:15 (ID 0 5/10) Item done: SHA256:3oGg0HvwQ6VGHkE8SofYZ/5FWUJFTqPh0ugzucM2+7Y
+2018/05/29 16:32:17 (ID 0 6/10) Item done: SHA256:5R7ACsDP/MGoOs6zlA50TN3f6/oUqFovlre5H8zIZ5M
+2018/05/29 16:32:20 (ID 0 7/10) Item done: SHA256:j0EiYAlvKKIL3m+OmY3UbJCC3mCNsKk4P2vroTRgv68
+2018/05/29 16:32:25 (ID 0 8/10) Item done: SHA256:dVOFr/6Fz6wiZuqid81v76AYq4C/EKubWGAXWJmBmF4
+2018/05/29 16:32:28 (ID 0 9/10) Item done: SHA256:vfyPUJNw01wcOdlShYkd62D5ijybp5a03XTjDVBIJNM
+2018/05/29 16:32:33 (ID 0 10/10) Item done: SHA256:Yw6bynADWnRfa5CVcNX/DPU5WhxvmFmeqaOgfiWJfQA
+2018/05/29 16:32:33 (ID 0) Workload exiting
+```
+
+Job 一樣跟 DaemonSet ReplicaSet deployment 也是使用 label 來標示。因為 Job 是有限的，會從開始到結束，通常會讓使用者建立很多，如果要建立一個唯一的 label 會變得更困難且危險，因為這樣， Job 物件會隨機挑選一個唯一的 label 然後用它去辨識一個已經建立的 Pod。在這種場景中，使用者可以選擇手動標示 label 或 selector，像是交換正在運行的 Job 而不殺死它正在管理的 Pod。
+
+#### Pod failure
+
+如果 Pod 執行任務失敗的話：
+
+```yaml
+# job-oneshot-failure1.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: oneshot
+  labels:
+    chapter: jobs
+spec:
+  template:
+    metadata:
+      labels:
+        chapter: jobs
+    spec:
+      containers:
+      - name: kuard
+        image: gcr.io/kuar-demo/kuard-amd64:1
+        imagePullPolicy: Always
+        args:
+        - "--keygen-enable"
+        - "--keygen-exit-on-complete"
+        - "--keygen-exit-code=1"
+        - "--keygen-num-to-gen=3"
+      restartPolicy: OnFailure
+```
+
+
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/10-2-job-oneshot-failure1.yaml
+```
+
+
+
+```shell
+$ kubectl get pods -l job-name=oneshot
+NAME            READY     STATUS             RESTARTS   AGE
+oneshot-jqx8b   0/1       CrashLoopBackOff   2          1m
+```
+
+Pod 失敗後會重新啟動，通常是在某個地方有 bug 造成的，Kubernetes 在重新啟動前會先等一小段時間，避免重複的啟動吃掉所有的資源，這個全部都是由`kubelet`所處理的，Job 物件不會涉入其中。
+
+刪除任務，然後把`restartPolicy`欄位的`OnFailure`值改成`Never`，然後再跑一次。
+
+```yaml
+# jobs-oneshot-failure2.yaml
+...
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+```
+
+
+
+```shell
+kubectl delete jobs oneshot
+kubectl apply -f jobs-oneshot-failure2.yaml
+```
+
+```shell
+$ kubectl get pods -l job-name=oneshot
+NAME            READY     STATUS    RESTARTS   AGE
+oneshot-486np   1/1       Running   0          5s
+oneshot-6ccnv   0/1       Error     0          23s
+oneshot-rpgkl   0/1       Error     0          32s
+```
+
+當他發生錯誤的時候我們會看到很多重複的 Pod。藉由設定`restartPolicy: Never`我們會告訴`kubectl`不要在失敗的時候重新啟動 Pod，而是宣稱那個 Pod 執行失敗。Job 物件注意到之後就會立即建立一個新的 Pod 來頂替失敗的 Pod。如果你不關心的話，可能會在你 cluster 裡產生很多垃圾的 Pod。所以因為這樣，我們建議你使用`restartPolicy: OnFailure`。
+
+```shell
+kubectl delete jobs oneshot
+```
+
+但是 Job 失敗可能會有很多種方式，像是他跑到一半的時候卡住了，要解決這個問題可以在 Job 裡的 Pod 搭配 liveness probes 一起使用，如果 liveness probe 認定你的 Pod 掛了，他就會幫你取代或是重新啟動 Pod。
+
+### Parallelism
+
+產生 key 的速度很慢，所以用平行化產生大量的 key，目標產生 100 組 key，每個 Pod 會產生 10 組，我們可以設定`completions`為 10 和`parallelism`為 5。
+
+```yaml
+# job-parallel.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: parallel
+  labels:
+    chapter: jobs
+spec:
+  parallelism: 5
+  completions: 10
+  template:
+    metadata:
+      labels:
+        chapter: jobs
+    spec:
+      containers:
+      - name: kuard
+        image: gcr.io/kuar-demo/kuard-amd64:1
+        imagePullPolicy: Always
+        args:
+        - "--keygen-enable"
+        - "--keygen-exit-on-complete"
+        - "--keygen-num-to-gen=10"
+      restartPolicy: OnFailure
+```
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/10-3-job-parallel.yaml
+```
+
+使用`--watch`的標籤去觀察，Pod 會一直建立直到有 10 為止
+
+```shell
+kubectl get pods -w
+```
+
+Clean up
+
+```shell
+kubectl delete job parallel
+```
+
+### Work Queues
+
+有個任務會建立很多的 work items 然後推到 work queue 裡面，work Job 會執行裡面的 work 直到 work quere 是空的為止。
+
+#### Starting a work queue
+
+我們會建立集中式的 work queue 的服務，`kuard`有內建一個簡單的 memory-base work queue，我們會建立一個簡單的 kuard instance 去協調所有的 work。
+
+建立一個簡單的 ReplicaSet 去管理 work queue daemon，即使機器故障也會確保新的 Pod 會被建立。
+
+```yaml
+# rs-queue.yaml
+apiVersion: extensions/v1beta1
+kind: ReplicaSet
+metadata:
+  labels:
+    app: work-queue
+    component: queue
+    chapter: jobs
+  name: queue
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: work-queue
+        component: queue
+        chapter: jobs
+    spec:
+      containers:
+      - name: queue
+        image: "gcr.io/kuar-demo/kuard-amd64:1"
+        imagePullPolicy: Always
+```
+
+
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/10-4-rs-queue.yaml
+```
+
+在這個時間點 work queue daemon 應該已經建立且在運行，我們使用 port-forwarding 去連接他：
+
+```shell
+QUEUE_POD=$(kubectl get pods -l app=work-queue,component=queue -o jsonpath='{.items[0].metadata.name}')
+kubectl port-forward $QUEUE_POD 8080:8080
+```
+
+開啟網頁然後選擇 MemQ Server，接下來，我們需要用 service expose work queue server，這會讓 producer 跟 consumer 透過 DNS 分配 work queue 變得更簡單：
+
+```yaml
+# service-queue.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: work-queue
+    component: queue
+    chapter: jobs
+  name: queue
+spec:
+  ports:
+  - port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app: work-queue
+    component: queue
+```
+
+
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/10-5-service-queue.yaml
+```
+
+#### Loading up the queue
+
+我們使用 curl 驅動 API 到 work queue server 然後建立大量的 work items，curl 會使用`kubectl port-forward`所開的連線。
+
+```bash
+# Create a work queue called 'keygen'
+curl -X PUT localhost:8080/memq/server/queues/keygen
+
+# Create 100 work items and load up the queue.
+for i in work-item-{0..99}; do
+  curl -X POST localhost:8080/memq/server/queues/keygen/enqueue \
+    -d "$i"
+done
+```
+
+
+
+```shell
+curl -s https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/10-6-load-queue.sh | bash
+```
+
+跑完之後應該看到 100 個 json 的物件，包含每一個 work item 的 id 訊息。
+
+```json
+{ 
+    "kind": "message",
+    "id": "0c3a31d0541d62463a8e9c23af89f0a5",
+    "body": "work-item-0",
+    "creationTimestamp": "2018-05-30T08:40:18.242408766Z"
+}
+```
+
+可以直接在 kuard 的 MemQ Server 頁面裡面看到，或是直接使用 API：
+
+```shell
+$ curl 127.0.0.1:8080/memq/server/stats
+{
+  "kind": "stats",
+  "queues": [
+    {
+      "name": "keygen",
+      "depth": 100,
+      "enqueued": 100,
+      "dequeued": 0,
+      "drained": 0
+    }
+  ]
+}
+```
+
+現在我們準備要開始建立一個 Job 來 consume work queue。
+
+#### Createing the consume job
+
+kuard 能夠和 consumer mode 配和，且能夠畫出 work items 在 work queue、建立 key 然後當 queue 空的時候會結束：
+
+```yaml
+# job-consumers.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app: message-queue
+    component: consumer
+    chapter: jobs
+  name: consumers
+spec:
+  parallelism: 5
+  template:
+    metadata:
+      labels:
+        app: message-queue
+        component: consumer
+        chapter: jobs
+    spec:
+      containers:
+      - name: worker
+        image: "gcr.io/kuar-demo/kuard-amd64:1"
+        imagePullPolicy: Always
+        args:
+        - "--keygen-enable"
+        - "--keygen-exit-on-complete"
+        - "--keygen-memq-server=http://queue:8080/memq/server"
+        - "--keygen-memq-queue=keygen"
+      restartPolicy: OnFailure
+```
+
+我們告訴 Job 能夠同時運行 5 個 Pod，因爲`completions`參數沒有設定，我們會把 Job 放到 worker pool mode。一旦第一個 Pod 正常離開的話， Job 就不會再開始任何新的 Pod。也就是，worker 只能在沒有工作的時候才能離開。
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/10-7-job-consumers.yaml
+```
+
+```shell
+$ kubectl get pods
+NAME              READY     STATUS    RESTARTS   AGE
+consumers-2pq7j   1/1       Running   0          27s
+consumers-67cqq   1/1       Running   0          27s
+consumers-9vxqx   1/1       Running   0          27s
+consumers-m5tm4   1/1       Running   0          27s
+consumers-pqbgz   1/1       Running   0          27s
+queue-x28zl       1/1       Running   0          51m
+$ curl 127.0.0.1:8080/memq/server/stats
+{
+  "kind": "stats",
+  "queues": [
+    {
+      "name": "keygen",
+      "depth": 92,
+      "enqueued": 100,
+      "dequeued": 8,
+      "drained": 0
+    }
+  ]
+}
+```
+
+這五個 Pod 會同時並行的運行，直到 work queue 是空的為止。當 queue 空了的時候，consumer pods 將會離開，而且`consumers` Job 會被認為成功。成功之後再推 work items 進去就不會有動作了。
+
+#### Cleaning up
+
+```shell
+kubectl delete rs,svc,job -l chapter=jobs
+```
 
 
 
