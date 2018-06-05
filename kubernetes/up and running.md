@@ -1967,7 +1967,1894 @@ $ curl 127.0.0.1:8080/memq/server/stats
 kubectl delete rs,svc,job -l chapter=jobs
 ```
 
+## ConfigMaps and Secrets
 
+如果需要為每個新環境重新創建映像，測試和版本控制就會變得更加風險和復雜。但是，我們如何在運行時專門使用該映像？
+
+這就是為什麼 ConfigMaps 和 secrets 的出現。ConfigMaps 被使用來提供設定工作的資訊，可能是很短的訊息或是一個檔案包含很多值。Secrets 很相似 ConfigMaps，但是會把敏感的訊息給遮住。兩個都可以使用像是 credentials 或是 TLS certificates。
+
+### ConfigMaps
+
+可以想像 ConfigMaps 是一個 Kubernetes 的物件，定義在一個小的檔案裡面。另一個方法是使用環境變數或是指令的參數。關鍵是在跑 Pod 之前他必須要跟 ConfigMap 綁定，這意味著定義 Pod 的設定檔可以被重複使用，只需要改變 ConfigMap 的檔案就行。
+
+#### 建立 ConfigMaps
+
+先使用命令式的方法
+
+```txt
+# my-config.txt
+# This is a sample config file that I might use to configure an application
+parameter1 = value1
+parameter2 = value2
+```
+
+我們建立檔案內的 ConfigMaps 然後再新增幾個參數：
+
+```shell
+kubectl create configmap my-config \
+  --from-file=my-config.txt \
+  --from-literal=extra-param=extra-value \
+  --from-literal=another-param=another-value
+```
+
+```shell
+$ kubectl get configmaps my-config -o yaml
+apiVersion: v1
+data:
+  another-param: another-value
+  extra-param: extra-value
+  my-config.txt: |
+    # This is a sample config file that I might use to configure an application
+    parameter1 = value1
+    parameter2 = value2
+kind: ConfigMap
+metadata:
+  creationTimestamp: 2018-05-31T03:29:57Z
+  name: my-config
+  namespace: default
+  resourceVersion: "2607537"
+  selfLink: /api/v1/namespaces/default/configmaps/my-config
+  uid: e483913b-6482-11e8-b4d0-0800273680e4
+```
+
+ConfigMap 就像是一些鍵值對的數據存在物件裡。
+
+#### Using a ConfigMap
+
+有三種主要方式來使用 ConfigMap：
+
+- Filesystem：你可以掛載一個 ConfigMap 到 Pod 上，那個檔案會紀錄每個 key 的條目，會把值設成該檔案的內容。
+- Environment variable：可以在 ConfigMap 裡動態設定環境變數。
+- Command-line argument：對於 ConfigMap 值上的 Container，Kubernetes 支援動態建立 command line。
+
+全部一起建立：
+
+```yaml
+# kuard-config.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kuard-config
+spec:
+  containers:
+    - name: test-container
+      image: gcr.io/kuar-demo/kuard-amd64:1
+      imagePullPolicy: Always
+      command:
+        - "/kuard"
+        - "$(EXTRA_PARAM)"
+      env:
+        - name: ANOTHER_PARAM
+          valueFrom:
+            configMapKeyRef:
+              name: my-config
+              key: another-param
+        - name: EXTRA_PARAM
+          valueFrom:
+            configMapKeyRef:
+              name: my-config
+              key: extra-param
+      volumeMounts:
+        - name: config-volume
+          mountPath: /config
+  volumes:
+    - name: config-volume
+      configMap:
+        name: my-config
+  restartPolicy: Never
+```
+
+對於 Filesystem 的方法來說，我們建立一個新的 volume 在 Pod 裡面，然後命名為`config-volume`，接著我們定義這個 volume 叫做 ConfigMap volume，然後把它指到 ConfigMap 掛載上去，我們必須用`volumeMount`註明他要掛到`kuard`container 的哪裡，這個例子是掛載到`/config`上。
+
+Environment variable 由特定的 valueFrom 指定，可以使用 ConfigMap 裡的資料。
+
+Command-line argument 建立在 Environment variable，Kubernetes 會使用`$(<env-var-name>)`語法替換。
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/11-2-kuard-config.yaml
+kubectl port-forward kuard-config 8080
+```
+
+點開 Server Env 的標籤，可以看到這兩個環境變數，原本設定在 ConfigMap 裡的。另外還在指令裡面傳入`EXTRA_PARAM`的參數。
+
+```shell
+/kuard extra-value
+```
+
+| Key           | Value         |
+| ------------- | ------------- |
+| ANOTHER_PARAM | another-value |
+| EXTRA_PARAM   | extra-value   |
+
+
+
+另外點選 File system brower，可以看到裡面有個資料夾叫做`/config`，每個 entry 都會是一個檔案，你還會看到一些隱藏的文件，用於在更新 ConfigMap 時乾淨交換新的值。
+
+### Secrets
+
+ConfigMap 用來紀錄大多數設定的資料，但是某些數據是非常敏感的，可能包含密碼、token 或其他 private key，總體來說，我們稱這些資料叫做 Secret。Kubernets 支援儲存這些資料並妥善地處理它。
+
+Secret 能夠讓 container images 建立的時候不需要綁定敏感的資料，讓 container 能保留重複使用的特性，透過在 Pod manifests 或 Kubernetes API 明確的聲明，能夠讓 Secrets expose 在 Pod 中。Kubernetes secretes API 提供了以應用程式為中心的機制，用來 expose 敏感的資料到應用程式，這樣比較容易用來隔離本身的 OS 系統。
+
+#### 建立 Secrets
+
+可以使用 Kubernetes API 或`kubectl`來建立，Secrets 會存放一筆以上的資料，格式是鍵值對。
+
+在這個章節我們會建立存放 TLS key andcertificate。
+
+`kuard`容器印象檔不會把 TLS certificate or key 綁在一起。這樣的好處是，能夠讓`kuard`印象檔推到公開的 Docker repository。
+
+```shell
+curl -O https://storage.googleapis.com/kuar-demo/kuard.crt
+curl -O https://storage.googleapis.com/kuar-demo/kuard.key
+```
+
+建立一個 secret 名字是`kuard-tls`使用`create secret`指令：
+
+```shell
+kubectl create secret generic kuard-tls \
+  --from-file=kuard.crt \
+  --from-file=kuard.key
+```
+
+```shell
+$ kubectl describe secrets kuard-tls
+Name:         kuard-tls
+Namespace:    default
+Labels:       <none>
+Annotations:  <none>
+
+Type:  Opaque
+
+Data
+====
+kuard.crt:  1050 bytes
+kuard.key:  1679 bytes
+```
+
+用 Pod 的 secrets volume 可以來消耗`kuard-tls`secret。
+
+#### Consuming Secrets
+
+可以使用 Kubernetes REST API 來消耗 Secrets，藉由應用程式知道要如何去直接呼叫 API。然而我們的目標是要保持應用程式可攜帶，不只在 Kubernetes 而且可以在其他平台不用修改的運行。
+
+不只有 API server 可以使用，我們可以使用 secrets volume。
+
+##### Secrets volumes
+
+可以使用 secrets volume type 來暴露 Secret data，Secrets volumes 會由`kubelet`管理，而且在 Pod 建立的時候建立 secrets。Secrets 會被存在 tmpfs volumes (又稱作 RAM disk)，他不會寫到磁碟中。
+
+會把 Secret `kuard-tls`掛載`/tls`上，裡面包含兩個案 kuard.crt kaurd.key。
+
+```yaml
+# kuard-secret.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kuard-tls
+spec:
+  containers:
+    - name: kuard-tls
+      image: gcr.io/kuar-demo/kuard-amd64:1
+      imagePullPolicy: Always
+      volumeMounts:
+      - name: tls-certs
+        mountPath: "/tls"
+        readOnly: true
+  volumes:
+    - name: tls-certs
+      secret:
+        secretName: kuard-tls
+```
+
+
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/11-3-kuard-secret.yaml
+kubectl port-forward kuard-tls 8443:8443
+```
+
+瀏覽器連上 https://localhost:8443/ 可以看到 invalid certificate warning，連線進去後，點選 File system brower 可以看到 certificate 在磁碟上。
+
+#### Private Docker Registries
+
+另一種就是把 secrets 存在 private Docker registry，要抓取的時候需要認證，私人的映像檔可以存在多個私人的 registry，這對於管理來說是一個挑戰。
+
+Image pull secrets 存放到 secrets API 會自動分配 private registry credential。Image pull secrets 儲存的方法就像一班的 secrets 一樣，可以在 Pod 的設定檔中的`spec.imagePulSecrets`去使用它。
+
+```shell
+kubectl create secret docker-registry my-image-pull-secret \
+  --docker-username=<username> \
+  --docker-password=<password> \
+  --docker-email=<email-address>
+```
+
+```yaml
+# kuard-secret-ips.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kuard-tls
+spec:
+  containers:
+    - name: kuard-tls
+      image: gcr.io/kuar-demo/kuard-amd64:1
+      imagePullPolicy: Always
+      volumeMounts:
+      - name: tls-certs
+        mountPath: "/tls"
+        readOnly: true
+  imagePullSecrets:
+  - name:  my-image-pull-secret
+  volumes:
+    - name: tls-certs
+      secret:
+        secretName: kuard-tls
+```
+
+### Naming Constraints
+
+定義在 ConfigMap 和 Secret 裡的 Key 必須遵守下面的格式：
+
+```
+[.]?[a-zA-Z0-9]([.]?[-_a-zA-Z0-9]*[a-zA-Z0-9])*
+```
+
+ConfigMaps 沒辦法儲存 binary data，Secret data 可以儲存任何用 base64 加密的資料，用 base64 加密後能夠儲存 binary data，但是這會增加管理的難度，要把密碼存在 yaml 檔中。
+
+### Managing ConfigMaps and Secrets
+
+Secrets 和 ConfigMaps 一樣都可以使用`create`,`delete`,`get`,`describe`指令去操作物件。
+
+#### Listing
+
+```shell
+$ kubectl get secrets
+NAME                  TYPE                                  DATA      AGE
+default-token-kvbsd   kubernetes.io/service-account-token   3         88d
+kuard-tls             Opaque                                2         1h
+```
+
+```shell
+$ kubectl get configmaps
+NAME        DATA      AGE
+my-config   3         8h
+```
+
+```shell
+$ kubectl describe configmap my-config
+Name:         my-config
+Namespace:    default
+Labels:       <none>
+Annotations:  <none>
+
+Data
+====
+another-param:
+----
+another-value
+extra-param:
+----
+extra-value
+my-config.txt:
+----
+# This is a sample config file that I might use to configure an application
+parameter1 = value1
+parameter2 = value2
+
+Events:  <none>
+```
+
+使用下面的指令，你可以看到 secret 的資料！
+
+```shell
+$ kubectl get configmap my-config -o yaml
+apiVersion: v1
+data:
+  another-param: another-value
+  extra-param: extra-value
+  my-config.txt: |
+    # This is a sample config file that I might use to configure an application
+    parameter1 = value1
+    parameter2 = value2
+kind: ConfigMap
+metadata:
+  creationTimestamp: 2018-05-31T03:29:57Z
+  name: my-config
+  namespace: default
+  resourceVersion: "2607537"
+  selfLink: /api/v1/namespaces/default/configmaps/my-config
+  uid: e483913b-6482-11e8-b4d0-0800273680e4
+```
+
+```shell
+$ kubectl get secret kuard-tls -o yaml
+apiVersion: v1
+data:
+  kuard.crt: LS0tLS1C...tLS0K
+  kuard.key: LS0tLS1C...tLQo=
+kind: Secret
+metadata:
+  creationTimestamp: 2018-05-31T10:28:08Z
+  name: kuard-tls
+  namespace: default
+  resourceVersion: "2622884"
+  selfLink: /api/v1/namespaces/default/secrets/kuard-tls
+  uid: 4f9f2928-64bd-11e8-b4d0-0800273680e4
+type: Opaque
+```
+
+#### Creating
+
+最簡單建立 Secret 和 ConfigMap 是透過
+
+```shell
+kubectl create secret generic
+kubectl create configmap
+```
+
+有很多方法把資料傳進 Secret 或 ConfigMap：
+
+- `--from-file=<filename>`：從檔案載入，key 的名稱會跟檔案相同。
+- `--from-file=<key>=<filename>`：從檔案仔入，可以明確定義 key 的名稱。
+- `--from-file=<directory>`：載入整個資料夾底下的所有檔案，key 的名稱跟檔案名稱想同。
+- `--from-literal=<key>=<value>`：直接指定 key 跟 value 的值。
+
+#### Updating
+
+在正在運行的程式上，你可以更新 ConfigMap 或 Secret，不需要重新啟動應用程式，application 會重新讀取新的設定值，這是很少見的功能。
+
+有三種方法來更新你的 ConfigMap 或 Secret：
+
+##### Update from file
+
+```shell
+kubectl replace -f <filename>
+kubectl apply -f <filename>
+```
+
+將資料放在檔案裡會顯得十分笨重，而且是在外部的檔案，這些資料會直接存在 YAML 檔案裡面，把密碼推到公開的地方小心會有洩密的可能。
+
+##### Recreate and update
+
+```shell
+kubectl create secret generic kuard-tls \
+  --from-file=kuard.crt --from-file=kuard.key \
+  --dry-run -o yaml | kubectl replace -f -
+```
+
+如果只跑第一行的指令的話`kubectl`會跟你說，你的 secret 已經存在，但是後面有`--dry-run`資料並不會真的存進去，後面又加上`-o yaml`叫他列出 yaml 的格式，然後使用 pipe 把前面的`stdout`會變成後面的`stdin`，最後使用`-f -`讀取`stdin`的值。這樣我們可以更新磁碟上的 Secret 就不需要特別加密 base64-encode 的資料。
+
+##### Edit current version
+
+```shell
+KUBE_EDITOR="vim" kubectl edit configmap my-config
+KUBE_EDITOR="vim" kubectl edit secret kuard-tls
+```
+
+#### Live updates
+
+一旦 ConfigMap 或 Secret 更新之後，所有的 volume 都會自動地更新，可能會花個幾秒鐘，而且不需要重新啟動 Pod。
+
+現階段來說沒有內建的方法可以讓應用程式去偵測 ConfiMap 已經被更新，叫他去讀取新的 ConfigMap，這通常取決於應用程式或是寫個腳本去看設定檔是否改變然後重新載入他們。
+
+`kuard`可以使用 File system brower 去看更新過後的變動。
+
+### Cleaning up
+
+```shell
+kubectl delete pod kuard-config kuard-tls
+kubectl delete secret kuard-tls
+kubectl delete configmap my-config
+```
+
+
+
+## Deployments
+
+`Deployment`物件存在是為了要管理新的版本發佈，能夠讓你更簡單地從一個版本更新到下一個版本，像是設定或是 health check 都是必須要顧慮到的，如果錯誤太多發生的話要馬上停止。使用`Deployment`可以更簡單更可靠的更新本版，且不需要停機或發生錯誤。
+
+原本基於`kubectl rolling-update`指令，不過因為功能非常龐大，所以被歸到`Deployment`物件底下。
+
+### Your First Deployment
+
+```shell
+kubectl run nginx --image=nginx:1.7.12
+kubectl get deployments nginx
+```
+
+#### Deployment Internals
+
+ReplicaSet 管理 Pod，Deployment 管理 ReplicaSet，之間的關係都是由 label 所定義的：
+
+```shell
+$ kubectl get deployments nginx \
+    -o jsonpath --template {.spec.selector.matchLabels}
+map[run:nginx]
+```
+
+由上面可以看出 Deployment 管理 ReplicaSet 是透過 label 為`run=nginx`的標籤：
+
+```shell
+$ kubectl get replicasets --selector=run=nginx
+NAME               DESIRED   CURRENT   READY     AGE
+nginx-59db8647bd   1         1         1         6m
+```
+
+我們可以用聲明式的指令`scale`去 resize Deployment：
+
+```shell
+$ kubectl scale deployments nginx --replicas=2
+deployment "nginx" scaled
+```
+
+現在看 ReplicaSet：
+
+```shell
+$ kubectl get replicasets --selector=run=nginx
+NAME               DESIRED   CURRENT   READY     AGE
+nginx-59db8647bd   2         2         2         8m
+```
+
+Scaling Deployment 也會控制 scale ReplicaSet。
+
+如果現在直接 scaling ReplicaSet：
+
+```shell
+$ kubectl scale replicasets nginx-59db8647bd --replicas=1
+replicaset "nginx-59db8647bd" scaled
+```
+
+然後再看 ReplicaSet：
+
+```shell
+$ kubectl get replicasets --selector=run=nginx
+NAME               DESIRED   CURRENT   READY     AGE
+nginx-59db8647bd   2         2         2         12m
+```
+
+這很奇怪，儘管 scale ReplicaSet 變成一個後，他的 desired state 還是兩個。請記得，Kubernetes 是一個會自我修復的系統，在最上層的 Deployment 物件管理 ReplicaSet，所以當被調成一個的時候，不再符合 Deployment 的 desired state，Deployment controller 被通知然後才取行動條回兩個。
+
+如果只想要直接管理 ReplicaSet，你必須用`--cascade=false`刪除 Deployment，否則 ReplicaSet 和 Pod 也會跟著刪除。
+
+### 建立 Deployment
+
+```shell
+kubectl get deployments nginx --export -o yaml | kubectl replace -f - --save-config
+```
+
+所看到的文件會長這樣：
+
+```yaml
+# kubectl get deployments nginx --export -o yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+  creationTimestamp: null
+  generation: 1
+  labels:
+    run: nginx
+  name: nginx
+  selfLink: /apis/extensions/v1beta1/namespaces/default/deployments/nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      run: nginx
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        run: nginx
+    spec:
+      containers:
+      - image: nginx:1.7.12
+        imagePullPolicy: IfNotPresent
+        name: nginx
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+status: {}
+```
+
+因為是使用`kubectl replace --save-config`，他會記錄最後一次更改的內容，`kubectl apply -f`用於你第一次建立 deployment。
+
+你可能會注意到有`spec.strategy.type`的選項，這邊主要有兩種不同方式來更新：`Recreate`和`RollingUpdate`。
+
+### Managing Deployments
+
+```shell
+$ kubectl describe deployments nginx
+Name:                   nginx
+Namespace:              default
+CreationTimestamp:      Thu, 31 May 2018 22:15:21 +0800
+Labels:                 run=nginx
+Annotations:            deployment.kubernetes.io/revision=1
+                        kubectl.kubernetes.io/last-applied-configuration={"apiVersion":"extensions/v1beta1","kind":"Deployment","metadata":{"annotations":{"deployment.kubernetes.io/revision":"1"},"creationTimestamp":null,"ge...
+Selector:               run=nginx
+Replicas:               2 desired | 2 updated | 2 total | 2 available | 0 unavailable
+StrategyType:           RollingUpdate
+MinReadySeconds:        0
+RollingUpdateStrategy:  1 max unavailable, 1 max surge
+Pod Template:
+  Labels:  run=nginx
+  Containers:
+   nginx:
+    Image:        nginx:1.7.12
+    Port:         <none>
+    Environment:  <none>
+    Mounts:       <none>
+  Volumes:        <none>
+Conditions:
+  Type           Status  Reason
+  ----           ------  ------
+  Available      True    MinimumReplicasAvailable
+OldReplicaSets:  <none>
+NewReplicaSet:   nginx-59db8647bd (2/2 replicas created)
+Events:          <none>
+```
+
+比較令人感興趣的欄位是`OldReplicaSets`跟`NewReplicaSet`，這些欄位指出 Deployment 正在管理 ReplicaSet 的物件。如果 Deployment 正在 rollout 中，就會看到這兩個欄位都有值，如果 rollout 成功後，這個`OldReplicaSets`欄位會被設成`<none>`。
+
+`kubectl rollout status`可以獲得正在 rollout 的狀態，`kubectl rollout history` 獲得歷史 rollout 的紀錄
+
+```shell
+$ kubectl rollout history deployment nginx
+deployments "nginx"
+REVISION  CHANGE-CAUSE
+1         <none>
+$ kubectl rollout status deployment nginx
+deployment "nginx" successfully rolled out
+```
+
+### 更新 Deployments
+
+最常見的兩個 Deployment 的功能是 scaling 跟應用程式的更新：
+
+#### Scaling a Deployment
+
+前面有展示過聲明式的方式 scale Deployment，使用的是`kubectl scale`的指令。不過最好的做法還是修改 yaml 的檔案來增加你的 replica 的數量：
+
+```yaml
+# nginx-deployment.yaml
+...
+spec:
+  replicas: 3
+...
+```
+
+```shell
+kubeclt apply -f nginx-deployment.yaml
+```
+
+```shell
+$ kubectl get deployment nginx
+NAME      DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+nginx     3         3         3            3           23h
+```
+
+#### 更新 Container Image
+
+一樣透過修改 yaml 檔案修改，這次是修改要更新的 container image 而不是 replica 的數量：
+
+```yaml
+# nginx-deployment.yaml
+...
+spec:
+  template:
+    spec:
+      containers:
+      - image: nginx:1.9.10
+        imagePullPolicy: Always
+...
+```
+
+然後再加上 annotation 到 template 裡，記錄這次的更新：
+
+```shell
+# nginx-deployment.yaml
+...
+spec:
+  template:
+    metadata:
+      annotations:
+        kubernetes.io/change-cause: "Update nginx to 1.9.10"
+...
+```
+
+小心你加上的 annotation 是到 template 上，而不是 Deployment 上。且不要在 scaling 的時候加 key 為`change-cause`的 annotation，否則他會觸發新的 rollout
+
+```shell
+kubeclt apply -f nginx-deployment.yaml
+```
+
+```shell
+$ kubectl rollout status deployment nginx
+deployment "nginx" successfully rolled out
+```
+
+這時候你可以看到舊的跟新的 ReplicaSet 同時存在，讓你隨時可以 roll back 回去：
+
+```shell
+$ kubectl get replicasets -o wide
+NAME               DESIRED   CURRENT   READY     AGE       CONTAINERS   IMAGES         SELECTOR
+nginx-59db8647bd   0         0         0         23h       nginx        nginx:1.7.12   pod-template-hash=1586420368,run=nginx
+nginx-85cb94577f   3         3         3         7m        nginx        nginx:1.9.10   pod-template-hash=4176501339,run=nginx
+```
+
+如果在 rollout 的途中你想要暫停他，可能是某些原因：
+
+```shell
+$ kubectl rollout pause deployments nginx
+deployment "nginx" paused
+```
+
+調查完你想要的東西後，想要繼續執行 rollout：
+
+```shell
+$ kubectl rollout resume deployments nginx
+deployment "nginx" resumed
+```
+
+#### Rollout History
+
+```shell
+$ kubectl rollout history deployment nginx
+deployments "nginx"
+REVISION  CHANGE-CAUSE
+1         <none>
+2         Update nginx to 1.9.10
+```
+
+revision 的編號會逐漸遞增，到目前為止有兩個版本：一個是初始化的 deployment 跟更新到 1.9.10 的。
+
+如果你對某個版本很感興趣的話，你可以加上`--revision`的標籤去看裡面的詳細訊息：
+
+```shell
+$ kubectl rollout history deployment nginx --revision=2
+deployments "nginx" with revision #2
+Pod Template:
+  Labels:	pod-template-hash=4176501339
+	run=nginx
+  Annotations:	kubernetes.io/change-cause=Update nginx to 1.9.10
+  Containers:
+   nginx:
+    Image:	nginx:1.9.10
+    Port:	<none>
+    Environment:	<none>
+    Mounts:	<none>
+  Volumes:	<none>
+```
+
+我們用`kubectl apply`再多加一個版本`1.10.2`
+
+```shell
+$ kubectl rollout history deployment nginx
+deployments "nginx"
+REVISION  CHANGE-CAUSE
+1         <none>
+2         Update nginx to 1.9.10
+3         Update nginx to 1.10.2
+$ kubectl get replicasets -o wide
+NAME               DESIRED   CURRENT   READY     AGE       CONTAINERS   IMAGES         SELECTOR
+nginx-59db8647bd   0         0         0         1d        nginx        nginx:1.7.12   pod-template-hash=1586420368,run=nginx
+nginx-85cb94577f   0         0         0         1h        nginx        nginx:1.9.10   pod-template-hash=4176501339,run=nginx
+nginx-985f54645    3         3         3         59s       nginx        nginx:1.10.2   pod-template-hash=541910201,run=nginx
+```
+
+如果想要回到上一個版本：
+
+```shell
+kubectl rollout undo deployment nginx
+```
+
+可以看到 1.9.10 的本版正在運行，你可看到 Deployment 只是簡單的調整 ReplicaSet 的數目：
+
+```shell
+$ kubectl get replicasets -o wide
+NAME               DESIRED   CURRENT   READY     AGE       CONTAINERS   IMAGES         SELECTOR
+nginx-59db8647bd   0         0         0         1d        nginx        nginx:1.7.12   pod-template-hash=1586420368,run=nginx
+nginx-85cb94577f   3         3         3         1h        nginx        nginx:1.9.10   pod-template-hash=4176501339,run=nginx
+nginx-985f54645    0         0         0         2m        nginx        nginx:1.10.2   pod-template-hash=541910201,run=nginx
+```
+
+當你使用`kubectl rollout undo`的時候更新，並不代表回到過去的版本，而是使用`kubectl apply`前一個版本：
+
+```shell
+$ kubectl rollout history deployment nginx
+deployments "nginx"
+REVISION  CHANGE-CAUSE
+1         <none>
+3         Update nginx to 1.10.2
+4         Update nginx to 1.9.10
+```
+
+revision 2 已經消失了！Deployment 會簡單的重複使用 template 然後重新命名 revision 的數字，這時候再使用`kubectl rollout undo`且用`--to-revision`限定他過去的版本：
+
+```shell
+$ kubectl rollout undo deployment nginx --to-revision
+deployment "nginx" 
+$ kubectl rollout history deployment nginx
+deployments "nginx"
+REVISION  CHANGE-CAUSE
+1         <none>
+4         Update nginx to 1.9.10
+5         Update nginx to 1.10.2
+```
+
+相同的`undo`會套用 revision 3 然後重新命名 revision 5。
+
+指定版本為 0 的話等同於指定前一個版本
+
+```shell
+kubectl rollout undo
+kubectl rollout undo --to-revision=0
+```
+
+預設 Deployment 會把所有的歷史紀錄都記住，但如果時間一長的話，歷史紀錄會變得非常大，建議會設定最大歷史紀錄的數量，參數是在`spec.revisionHistoryLimit`裡設定：
+
+```yaml
+...
+spec:
+  # 每天更新的話，歷史紀錄會保持兩週
+  revisionHistoryLimit: 14
+...
+```
+
+### Deployment Strategies
+
+Kubernetes 支援兩種不同 rollout 的策略：
+
+- `Recreate`
+- `RollingUpdate`
+
+#### Recreate Strategy
+
+Recreate 策略是在兩個 rollout 策略裡面最簡單的，他會簡單的更新 ReplicaSet，ReplicaSet 會去管理 Pod 使用新的映像檔，然後中止所有跟 Deployment 聯繫的 Pod。ReplicaSet 注意到沒有任何的 replica 的時候，他就會重新建立新的 Pod，並且會是用新的 image。一旦 Pod 被重新建立，他就會跑新的版本。
+
+這個策略快又簡單，不過他有一個缺點，他有可能會導致停機，因為這樣，recreate 策略應該只用來在測試的 deployment，他不會直接服務使用者，可以接受短暫的停機。
+
+#### RollingUpdate Strategy
+
+`RollingUpdate`策略是最好用來面對使用者的策略，它更新的速度會比`Recreate`慢，但是他更複雜且更強大，使用`RollingUpdate`可以一邊 rollout 成新的版本，一邊接收使用者的流量，且不需要停機。
+
+從策略的名字來推斷，他一次會更新一些 Pod，然後慢慢增加新的 Pod 的數量。
+
+##### Managing multiple versions of your service
+
+重點是會有一段時間同時服務兩個版本，你必須處理你的應用程式，能夠兼容比較舊的版本。
+
+舉例來說你有兩個版本 v1 跟 v2，當今天使用者請求 v1 的網頁的時候，這時你更新到了 v2，使用者接收到網頁再次向 server 請求 javascript library 的時候，他會請求到 v2 的版本，萬一版本不兼容的話，你的應用程式可能不會正常運作，所以不如你如何更新都必須要兼容過去的版本，使你的應用程式變得更可靠。
+
+這必須要去自己去 decouple 你的 API，如果是非常耦合的話那會很難快速的更新。
+
+##### Configuring a rolling update
+
+有兩個參數是你可以調整 rolling update 的行為：
+
+- `maxUnavailable`
+- `maxSurge`
+
+`maxUnavailable`設定不能使用 Pod 的最大數量，可以設置數量或是百分比。這個參數幫助我們可以更新多快，假如設成 50%，現在有 4 個 replica，那 rolling update 會立即把舊的 ReplicaSet 降到 2 個 replica，然後再把新的 ReplicaSet 提升到 2 個 replica，最後再把舊的降到 0，新的提升到 4，完成更新，總共有四個步驟。
+
+如果設成 25% 的話，每次就只會執行一個 replica，總共的步驟會多一倍。
+
+如果設成 100% 的話，就會跟 recreate 的策略一樣。
+
+通常是用在你資源有限的時候，資源不能超過幾個 replica，但如果今天資源有執行更新的話，那可以把`maxUnavailable`設成 0，然後調整`maxSurge`的參數。
+
+maxUnavailable`跟`maxSurge`兩個很相似，假設今天有 10 個 replica，`maxUnavailable`是 0 和`maxSurge`是 20%，那第一次更新的時候會將新的 ReplicaSet 提升至 2 個 replica，總共會有 120% 的服務在裡面，12 個 replica，然後再把舊的 replica 下降至 8 個，直到更新成功為止。
+
+如果把`maxSurge`設為 100% 的話就等於是 blue/green deployment。
+
+#### Slowing Rollouts to Ensure Service Health
+
+為了要確保新的 Pod 是健康的，在每次執行階段的時候，Pod 都必須要回報 readiness check，ready 之後才會繼續更新下一個 Pod。
+
+不過有些錯誤並不是馬上就會出現的，像是 memory leak 直到一分鐘以後才會出現，或是所有請求之中只有 1% 的機率會發生錯誤，我們會先等待 Pod ready 了一段時間，提高新版本的可信度，才會前往更新下一個 Pod。
+
+```yaml
+...
+spec:
+  minReadySeconds: 60
+...
+```
+
+設定`minReadySeconds`為 60 意思為 Deployment 會看 Pod 已經 ready 60 秒之後才會更新下一個 Pod。
+
+我們還需要設定一個上線的時間，假如新的版本有 bug 在裡面，他從來不會 ready，這樣 Deployment 就會永遠停留在 roll-out 的狀態，可以使用`progressDeadlineseconds`參數：
+
+```yaml
+...
+spec:
+  progressDeadlineseconds: 600
+...
+```
+
+這個範例設定的時間是 10 分鐘，如果更新失敗超過 10 分鐘的話，Deployment 就會把這次的更新標為 failed，然後中止更新。
+
+他設定的是計時失敗的時間，如果有成功的建立或刪除，計時就會重新設成 0。
+
+### 刪除 Deployment
+
+命令式：
+
+```shell
+kubectl delete deployments nginx
+```
+
+聲明式：
+
+```shell
+kubectl delete -f nginx-deployment.yaml
+```
+
+刪除一樣會把所有的 ReplicaSet 跟 Pod 都刪掉，如果只想要刪除 Deployment 物件的話可以加上`--cascade=false`的flag。
+
+## Integrating Storage Solutions and Kubernetes
+
+在很多解偶狀態的應用程式中，盡可能地把建立的 microservices 變得越 stateless，這樣會最可靠、最大化系統管理。
+
+然後在現在每個系統中，都有可能會會有複雜的的狀態，從資料庫的紀錄到網頁搜尋引擎裡的索引，有時候你就是會要存某些資料在某些地方。
+
+在分散式系統中要用 container 和 container orchestration solution 來整合這些資料是最複雜的。從要把它移到 container 的架構裡，他必須是解偶的、不動的、聲明式的應用程式。這個用在無狀態的網頁應用程式是相對簡單的，但是 cloud-native 儲存方法像是 Cassandra 或 MongoDB 涉入一些手動或必要的步驟來建立一個可靠的、複製的解決方案。
+
+假如在 ReplicaSet 裡設定 MongoDB 他會涉入 Mongo daemon 和他所跑的指令要去判斷誰是 leader，以及要去參與 Mongo cluster。當然這些可以用腳本寫，但是在 container 的世界裡這會很困難去看到要整合這些指令。同樣，即使用 DNS-resolvable names 給每一台 replica set 的 container 也是很有挑戰性。
+
+這些複雜性來自於資料重量的事實，大多數的 container 的系統不是獨自建立的，通常是採用存在的系統去部署 VM，這些系統可能包含匯入或 migrate 的資料。
+
+最後，向外部雲儲存發展意味著他不會真正存在 Kubernetes cluster 內部。
+
+### Importing External Services
+
+#### Services Without Selectors
+
+外部的 services，沒有任何的 label query，只是使用一般的 DNS name 去指向正在跑的 database server，假設有個正在跑的 database server 是`database.company.com`，為了把外部的 database service 匯入到 Kubernetes，我們先建立不需要 Pod selecot 的 service，他會參照 database server 的 DNS name。
+
+```yaml
+# dns-service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: external-database
+spec:
+  type: ExternalName
+  externalName: "database.company.com
+```
+
+使用一般的 service 來說，會創建一個 IP address，然後用 A record 記錄在 DNS 裡面。當`spec.type`標示了`ExternalName`的時候，他會變成 CNAME record 指向外部的名字`database.company.com`。在 cluster 裡有個應用程式使用 DNS lookup 這個 hostname `external-database.svc.default.cluster`，DNS protocol 別名他為`database.company.com`，然後他就會去解析外部網址的 IP address，如此一來，所有的 container 都會認為他是在跟其他 container 溝通，但實際上他會重新導向到外部的資料庫。
+
+很多雲端資料庫都會提供 DNS name，你可以直接使用那個 DNS name 當作你`externalName`。
+
+然而有一些沒有提供 DNS address 給外部資料庫，他只提供 IP address。首先，先建立不需要 label selector 的 Service，而且也不需要之前使用的`ExternalName`。
+
+```yaml
+# external-ip-service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: external-ip-database
+```
+
+這樣 Kubernetes 會分配一個虛擬的 Ip address 給這個 service，而且使用 A record。然而，因為 service 沒有 selector，這樣就沒有 endpoint 讓 loadbalancer 重新導向流量。
+
+由於他是外部的服務，使用者必須手動新增 endpoint 的資源：
+
+```yaml
+# external-ip-endpoints.yaml
+kind: Endpoints
+apiVersion: v1
+metadata:
+  name: external-ip-database
+subsets:
+  - addresses:
+    - ip: 192.168.0.1
+    ports:
+    - port: 3306
+```
+
+如果有多個 ip 可以使用 array 重複 ip，這樣 load balancer 就會平均分配流量。
+
+如果使用者使用 ip 的話，那要盡可能確保 ip 要保持不變。
+
+#### Limitations of External Services: Health Checking
+
+因為他是外部的服務，Kubernetes 不會執行任何的 health check，使用有責任確保 endpoint 或 Kubernetes 提供的 DNS name 是可靠的，對於你的應用程式來講。
+
+### Running Reliable Singletons
+
+運行相同的資料庫在每個 ReplicaSet 會需要更多的儲存空間，而且不曉得他會存取到哪的資料庫，所以運行單一個資料庫就不會發生這個問題。
+
+這很像違反了建立可靠的分散式系統的原則，將你的資料庫運行在單一的機器上，萬一更新失敗的時候，會有潛在停機的可能。當在大型的系統或危及任務的系統中可不能接受停機，但對於小系統來講，有限的停機時間是可以降低複雜性。
+
+#### Running a MySQL Singleton
+
+這個章節需要建立的三個物件：
+
+- 一個 persisten volume 去管理磁碟上的儲存空間，跟 MySQL 應用程式的管理分開。
+- MySQL Pod 裡面會運行 MySQL 的應用程式。
+- Service 會暴露 Pod 給其他 container 使用。
+
+persistent volume 的生命週期跟其他的 Pod 或 container 不一樣，即使容器掛了但是資料應該要繼續存活在磁碟上，或是移動到不同的機器。如果移動一個應用程式到不同的機器，那 volume 應該也要跟著移動，資料應該被保留，分散資料儲存空間變得有可能，首先我們要先建立 persistent volume。
+
+這個範例會使用 NFS，有最大的可移值性，Kubernetes 支援很多不同種的 persistent volume drive type。可以簡單地取代`nfs`為 cloud provider volume type，像是`azure`、`awsElasticBlockStore`、`gcePersistentDisk`。你只需要改變這個，Kubernetes 就會幫你建立適當的儲存磁碟。
+
+```yaml
+# nfs-volume.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: database
+  labels:
+    volume: my-volume
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  nfs:
+    server: 192.168.0.1
+    path: "/exports"
+```
+
+這邊定義了 NFS persistent volume，有 1GB 儲存空間。
+
+```shell
+kubectl apply -f nfs-volume.yaml
+```
+
+我們現在要宣告這些空間要給我們的 Pod 來使用，所以要建立`PersistentVolumeClaim`的物件：
+
+```yaml
+# nfs-volume-claim.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: database
+spec:
+  resources:
+    requests:
+      storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  selector:
+    matchLabels:
+      volume: my-volume
+```
+
+```shell
+kubectl apply -f nfs-volume-claim.yaml
+```
+
+這邊的`selector`會使用 label 找到我們之前定義的 volume。
+
+這樣間接的定義似乎有點過於複雜，但是有一個目的，就是把定義的 Pod 和定義儲存的部分分開。你也可以直接在 Pod 裡面使用 volume，但他會鎖定程使用特定某一個 volume provider。透過 volume claims，你可以保持你的 Pod 規格，簡單的建立不同的 volume 指向不同的雲，然後使用`PersistentVolumeClaim`去綁定他們。
+
+接下來我們可以使用 ReplicaSet 去建立我們單一的 Pod，這聽起來很怪，讓一個 ReplicaSet 去管理一個 Pod，但是這是為了可靠性，如果 Pod 上的那台機器掛了，那台機器上的 Pod 就不會再重新起動，但如果有 ReplicaSet 管理的話，就會重新安排他，所以為了確保資料庫的 Pod 會自我修復，我們需要使用更高層的 ReplicaSet controller 去管理他。
+
+```yaml
+# mysql-replicaset.yaml
+apiVersion: extensions/v1beta1
+kind: ReplicaSet
+metadata:
+  name: mysql
+  # labels so that we can bind a Service to this Pod
+  labels:
+    app: mysql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+      - name: database
+        image: mysql
+        resources:
+          requests:
+            cpu: 1
+            memory: 2Gi
+        env:
+        # Environment variables are not a best practice for security,
+        # but we're using them here for brevity in the example.
+        # See Chapter 11 for better options.
+        - name: MYSQL_ROOT_PASSWORD
+          value: some-password-here
+        livenessProbe:
+          tcpSocket:
+            port: 3306
+        ports:
+        - containerPort: 3306
+        volumeMounts:
+          - name: database
+            # /var/lib/mysql is where MySQL stores its databases
+            mountPath: "/var/lib/mysql"
+      volumes:
+      - name: database
+        persistentVolumeClaim:
+          claimName: database
+```
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/13-6-mysql-replicaset.yaml
+```
+
+一但我們建立了 ReplicaSet 我們將可以建立 MySQL 的 Pod，最後只需要 expose service：
+
+```yaml
+# mysql-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+spec:
+  ports:
+  - port: 3306
+    protocol: TCP
+  selector:
+    app: mysql
+```
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/13-7-mysql-service.yaml
+```
+
+現在我們有一個 MySQL 在運行，他的 service 名字是 mysql，可以透過全名的 domain 去存取`mysql.svc.default.cluster`。
+
+如果你只想要簡單，可以有短暫的停機時間來處理資料庫更新或是機器掛了的話，這個儲存方法可以會不錯。
+
+#### Dynamic Volume Provisioning
+
+很多的 cluster 都會包含 dynamic volume provisioning。有了 dynamic volume provisioning，cluster 可以建立`StorageClass`的物件這邊有預設的儲存 class 會自動的規定 Microsoft Azure platform 的磁碟物件：
+
+```yaml
+# storageclass.yaml
+apiVersion: storage.k8s.io/v1beta1
+kind: StorageClass
+metadata:
+  name: default
+  annotations:
+    storageclass.beta.kubernetes.io/is-default-class: "true"
+  labels:
+    kubernetes.io/cluster-service: "true"
+provisioner: kubernetes.io/azure-disk
+```
+
+一但這個被建立，你可以使用 persistent volume claim 去指向這個 storage class，而不是指到 persistent volume，他會動態的建立 volume 而且綁定 persistent volume claim。
+
+```yaml
+# dynamic-volume-claim.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: my-claim
+  annotations:
+    volume.beta.kubernetes.io/storage-class: default
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+```
+
+`volume.beta.kubernetes.io/storage-class`這個 annotation 是用來連結備份的到 storage class，我們剛剛所建立的。
+
+Persisten volumes 是給傳統的應用程式所使用的儲存空間，但是如果你需要高可用、可拓展性的儲存空間的話，那可以使用`StatefulSet`的物件，接下來，我們會描述如何使用`StatefulSet`部署 Mongo DB。
+
+### Kubernetes-Native Storage with StatefulSets
+
+我們強調 ReplicaSet 是有同質性，在設計中，replica 沒有他獨自的 id 或設定，當如果有 stateful 的應用程式的時候，這會非常難去開發，所以 StatefulSets 就誕生了。
+
+#### Properties of StatefulSets
+
+StatefulSet 跟 ReplicaSet 非常相似，都是由一組 Pod 的 replica，但又不像 ReplicaSet，他有幾個特性：
+
+- 每個 replica 都會帶有 unique index，像是 database-0、database-1。
+- 每個 replica 的 index 都會由小到大依序增加，且在建立的時候，前一個 Pod 是健康而且可用的話，才會建立下一個。
+- 當刪除的時候會由 index 最大的開始刪除，可以用於 scaling down。
+
+#### Manually Replicated MongoDB with Statefulsets
+
+這這個章節會建立 MongoDB cluster：
+
+```yaml
+# mongo-simple.yaml
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  name: mongo
+spec:
+  serviceName: "mongo"
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      containers:
+      - name: mongodb
+        image: mongo:3.4.1
+        command:
+        - mongod
+        - --replSet
+        - rs0
+        ports:
+        - containerPort: 27017
+          name: peer
+```
+
+這個設定檔跟 ReplicaSet 很相似，只有`apiVersion`和`kind`的欄位不同。
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/13-10-mongo-simple.yaml
+```
+
+一但建立可以看到 ReplicaSet 跟 StatefulSet 的不同：
+
+```shell
+$ kubectl get pods
+NAME          READY     STATUS    RESTARTS   AGE
+mongo-0       1/1       Running   0          44s
+mongo-1       1/1       Running   0          5s
+mongo-2       1/1       Running   0          4s
+```
+
+有兩個不同的點：第一 Pod 有數字的 index 而不是亂數得值。第二個不同是 Pod 會比較緩慢的建立，而不是 ReplicaSet 同時建立所有的 Pod。
+
+一旦 StatefulSet 被建立，我們需要建立 headless service 來幫 StatefulSet 去管理 DNS entry。如果 service 沒有給 cluster 虛擬 IP 的話，service 被稱作為 headless service。因為 StatefulSet 的 Pod 有為一個 id，去 load balance IP address 並不合理。你使用`clusterIP: None`可以建立 headless service。
+
+```yaml
+# mongo-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+spec:
+  ports:
+  - port: 27017
+    name: peer
+  clusterIP: None
+  selector:
+    app: mongo
+```
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/13-11-mongo-service.yaml
+```
+
+你建立好 service 後，使用 DNS lookup 可以看到有四條 DNS entry，不像一般的 standard service，使用 DNS lookup 會看到所有的 hostname provider。此外這個 entry 會建立`mongo-0.mongo.default.svc.cluster.local`這非常方便用來設定你的 replica。
+
+```
+# DNS Type: A, Name: mongo
+;; opcode: QUERY, status: NOERROR, id: 61497
+;; flags: qr aa rd ra; QUERY: 1, ANSWER: 3, AUTHORITY: 0, ADDITIONAL: 0
+
+;; QUESTION SECTION:
+;mongo.default.svc.cluster.local.	IN	 A
+
+;; ANSWER SECTION:
+mongo.default.svc.cluster.local.	30	IN	A	172.17.0.5
+mongo.default.svc.cluster.local.	30	IN	A	172.17.0.7
+mongo.default.svc.cluster.local.	30	IN	A	172.17.0.8
+```
+
+```
+# DNS Type: A, Name: mongo-0
+;; opcode: QUERY, status: NXDOMAIN, id: 20148
+;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 1, ADDITIONAL: 0
+
+;; QUESTION SECTION:
+;mongo-0.	IN	 A
+
+;; AUTHORITY SECTION:
+.	3600	IN	SOA	a.root-servers.net. nstld.verisign-grs.com. 2018060400 1800 900 604800 86400
+```
+
+可以運行指令測試看看：
+
+```shell
+$ kubectl exec -ti mongo-0 -- ping mongo-1.mongo
+PING mongo-1.mongo.default.svc.cluster.local (172.17.0.7): 56 data bytes
+64 bytes from 172.17.0.7: icmp_seq=0 ttl=64 time=0.106 ms
+64 bytes from 172.17.0.7: icmp_seq=1 ttl=64 time=0.082 ms
+```
+
+接下來我們要手動建立 Mongo replication，使用我們剛剛所建立的每個 hostname。
+
+我們選擇`mongo-0.mongo`作為初始化，然後運行 mongo 的指令：
+
+```shell
+$ kubectl exec -ti mongo-0 mongo
+> rs.initiate( {
+    _id: "rs0",
+    members:[ { _id: 0, host: "mongo-0.mongo:27017" } ]
+  });
+{ "ok" : 1 }
+```
+
+這個指令告訴 mongodb 建立 ReplicaSet`rs0`，使用`mongo-0.mongo`作為主要 replica。
+
+`rs0`的名字是任意的，可以換成你想要的。
+
+一但你建立完 Mongo ReplicaSet 之後，你可以新增剩下的 replica，運行下面的指令：
+
+```shell
+$ kubectl exec -ti mongo-0 mongo
+> rs.add("mongo-1.mongo:27017");
+> rs.add("mongo-2.mongo:27017");
+```
+
+你能看到我們正在使用 DNS name 去新增 replica 到我們的 Mongo cluster，我們的 MonogoDB replica 這在運行，但是我們沒辦法自動的運行，在下一個章節會使用校本去讓他自動運行。
+
+#### Automating MongoDB Cluster Creation
+
+為了要讓我們的 StatefulSet MongoDB cluster 自動部署的話，我們必須要在 container 裡執行一些初始化的腳本。
+
+為了設置 Pod 且不需要建立新的 Docker image，我們使用 ConfigMap 去新增腳本到存在的 MongoDB image：
+
+```yaml
+- name: init-mongo
+  image: mongo:3.4.1
+  command:
+  - bash
+  - /config/init.sh
+  volumeMounts:
+  - name: config
+    mountPath: /config
+volumes:
+- name: config
+  configMap:
+    name: "mongo-init"
+```
+
+現在要掛載 ConfigMap volume`mongo-init`，這個 ConfigMap 會包含初始化的腳本。首先他會決定他是否運行在`mongo-0`上，如果他運行在`mongo-0`的話，執行之前運行的指令，其他的話就會等到註冊自己。
+
+```yaml
+# mongo-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mongo-init
+data:
+  init.sh: |
+    #!/bin/bash
+
+    # Need to wait for the readiness health check to pass so that the
+    # mongo names resolve. This is kind of wonky.
+    until ping -c 1 ${HOSTNAME}.mongo; do
+      echo "waiting for DNS (${HOSTNAME}.mongo)..."
+      sleep 2
+    done
+
+    until /usr/bin/mongo --eval 'printjson(db.serverStatus())'; do
+      echo "connecting to local mongo..."
+      sleep 2
+    done
+    echo "connected to local."
+
+    HOST=mongo-0.mongo:27017
+
+    until /usr/bin/mongo --host=${HOST} --eval 'printjson(db.serverStatus())'; do
+      echo "connecting to remote mongo..."
+      sleep 2
+    done
+    echo "connected to remote."
+
+    if [[ "${HOSTNAME}" != 'mongo-0' ]]; then
+      until /usr/bin/mongo --host=${HOST} --eval="printjson(rs.status())" \
+            | grep -v "no replset config has been received"; do
+        echo "waiting for replication set initialization"
+        sleep 2
+      done
+      echo "adding self to mongo-0"
+      /usr/bin/mongo --host=${HOST} \
+         --eval="printjson(rs.add('${HOSTNAME}.mongo'))"
+    fi
+
+    if [[ "${HOSTNAME}" == 'mongo-0' ]]; then
+      echo "initializing replica set"
+      /usr/bin/mongo --eval="printjson(rs.initiate(\
+          {'_id': 'rs0', 'members': [{'_id': 0, \
+           'host': 'mongo-0.mongo:27017'}]}))"
+    fi
+    echo "initialized"
+
+    while true; do
+      sleep 3600
+    done
+```
+
+腳本在運行後就會永遠的運行，每個 container 都會有相同的`RestartPolicy`。因為我們想要我們主要的 Mongo container 能夠重新啟動，所以我們必須讓我們的 initialization container 永遠運行，否則 Kubernetes 會認為我們的 mongo Pod 是不健康的。
+
+全部放在一起：
+
+```yaml
+# mongo.yaml
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  name: mongo
+spec:
+  serviceName: "mongo"
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      containers:
+      - name: mongodb
+        image: mongo:3.4.1
+        command:
+        - mongod
+        - --replSet
+        - rs0
+        ports:
+        - containerPort: 27017
+          name: web
+      # This container initializes the mongodb, then sleeps.
+      - name: init-mongo
+        image: mongo:3.4.1
+        command:
+        - bash
+        - /config/init.sh
+        volumeMounts:
+        - name: config
+          mountPath: /config
+      volumes:
+      - name: config
+        configMap:
+          name: "mongo-init"
+```
+
+然後我們可以建立 Mongo cluster：
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/13-11-mongo-service.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/13-12-mongo-configmap.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/13-13-mongo.yaml
+```
+
+也可以全部寫在一個檔案裡，用`---`分別開來，且卻本你的順序是正確的，因為 StatefulSet 必須建立在 ConfigMap 前。
+
+#### Persistent Volumes and StatefulSets
+
+對 persistent storage 來說，你必須 mount persistent volume 到 /data/db 目錄。 在 Pod template，你必須要更新 persistent volume claim 的 mountPath。
+
+```yaml
+volumeMounts:
+- name: database
+  mountPath: /data/db
+```
+
+雖然這種方法類似於我們用可靠的單例看到的方法，但由於 StatefulSet 複製了多個 Pod，因此不能簡單地引用 persistent volume claim。相反，您需要添加 persisten volume claim template。您可以將 claim template 視為與 Pod template 相同，但不會創建 Pod，它會創建 volume claim。您需要將以下內容添加到 StatefulSet 定義的底部：
+
+```yaml
+volumeClaimTemplates:
+- metadata:
+    name: database
+    annotations:
+      volume.alpha.kubernetes.io/storage-class: anything
+  spec:
+    accessModes: [ "ReadWriteOnce" ]
+    resources:
+      requests:
+        storage: 100Gi
+```
+
+當您將一個 volume claim template 添加到一個 StatefulSet 定義中時，每次 StatefulSet controller 創建一個屬於 StatefulSet 的 Pod 時，它將根據此 template 創建一個 persistem volume claim 作為該 Pod 的一部分。
+
+為了讓這些 replica 的 persistent volume 正常工作，您需要為 persistent volume 設置自動配置，或者您需要預先填充 persisten volume 物件以供 StatefulSet controller 從中進行使用。如果沒有可創建的 claim，則 StatefulSet controller 將無法創建相應的 Pod。
+
+#### One Final Thing: Readiness Probes
+
+製作我們的 MongoDB cluster 的最後一部分是為我們的 Mongo-serving container 加上 health check：
+
+```yaml
+...
+livenessProbe:
+  exec:
+    command:
+      - /usr/bin/mongo
+      - --eval
+      - db.serverStatus()
+    initialDelaySeconds: 10
+    timeoutSeconds: 10
+...
+```
+
+## Deploying Real-World Applications
+
+三個真實世界的應用：
+
+- Parse：一個開源 API server，專門給手機應用程式使用。
+- Ghost：一個部落格和內容管理平台。
+- Redis：輕量 key/value 儲存。
+
+### Parse
+
+https://github.com/parse-community/parse-server
+
+Parse server 是一個 cloud API，致力於提供簡單讓使用者儲存手機的 server。他提供很多不同的 client library，方便你去整合 Android、iOS 和其他手機平台。
+
+#### Prerequisites
+
+Parse 使用 MongoDB cluster 來儲存資料，在前一章節有說明如何用 StatefulSet 建立 MongoDB，這個章節假設你已經有三個 Mongo cluster 正跑在 kubernetes 裡。且假設你有 Docker login。最後假設你的 Kuebrnetes cluster 有適當的部署。
+
+### 製作 parse-server 映像檔
+
+裡面有 Dockerfile 可以直接製作映像檔：
+
+```shell
+git clone https://github.com/parse-community/parse-server.git
+cd parse-server
+docker build -t ${USER}/parse-server .
+docker push ${USER}/parse-server
+```
+
+### Deploying the parse-server
+
+有三個參數要設定：
+
+- `APPLICATION_ID`：授權應用程式的識別碼。
+- `MASTER_KEY`：授權 root user 的識別碼。
+- `DATABASE_URI`：MongoDB cluster 的 URI
+
+```yaml
+# parse.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: parse-server
+  namespace: default
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        run: parse-server
+    spec:
+      containers:
+      - name: parse-server
+        image: akiicat/parse-server
+        args:
+        - --appId
+        - $APP_ID
+        - --masterKey
+        - $MASTER_KEY 
+        - --databaseURI
+        - $DATABASE_URI
+        env:
+        - name: DATABASE_URI
+          value: "mongodb://mongo-0.mongo:27017,\
+            mongo-1.mongo:27017,mongo-2.mongo\
+            :27017/dev?replicaSet=rs0"
+        - name: APP_ID
+          value: my-app-id
+        - name: MASTER_KEY
+          value: my-master-key
+```
+
+### Testing Parse
+
+Expose service
+
+```yaml
+# parse-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: parse-server
+  namespace: default
+spec:
+  ports:
+  - port: 1337
+    protocol: TCP
+    targetPort: 1337
+  selector:
+    run: parse-server
+```
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/14-2-parse-service%2Cyaml
+```
+
+### Ghost
+
+是一個 blog engine，用 Javascript 寫的。
+
+#### Configuring Ghost
+
+config 檔案也是使用 Javascript 寫的，我們會把它存在 ConfigMap 裡：
+
+```js
+// ghost-config.js
+var path = require('path'),
+    config;
+
+config = {
+    development: {
+        url: 'http://localhost:2368',
+        database: {
+            client: 'sqlite3',
+            connection: {
+                filename: path.join(process.env.GHOST_CONTENT,
+                                    '/data/ghost-dev.db')
+            },
+            debug: false
+        },
+        server: {
+            host: '0.0.0.0',
+            port: '2368'
+        },
+        paths: {
+            contentPath: path.join(process.env.GHOST_CONTENT, '/')
+        }
+    }
+};
+
+module.exports = config;
+```
+
+建立 ConfigMap 物件
+
+```shell
+kubectl create configmap --from-file ghost-config.js ghost-config
+```
+
+ConfigMap 命名為`ghost-config`，我們會掛載 config file 到我們的 container 上，然後用 Deployment 物件建立 Ghost：
+
+```yaml
+# ghost.yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: ghost
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      run: ghost
+  template:
+    metadata:
+      labels:
+        run: ghost
+    spec:
+      containers:
+      - image: ghost
+        name: ghost
+        command:
+        - sh
+        - -c
+        - cp /ghost-config/ghost-config.js /var/lib/ghost/config.js
+          && docker-entrypoint.sh npm start
+        volumeMounts:
+        - mountPath: /ghost-config
+          name: config
+      volumes:
+      - name: config
+        configMap:
+          defaultMode: 420
+          name: ghost-config
+```
+
+有一件需要注意的事情，我們這裡把`config.js`從不同的地方複製進去，讓 Ghost 可以找到他，不過因為 ConfigMap 只能被掛載載目錄上，而不能是單一的檔案，Ghost 也期望該檔案不是在 ConfigMap 的目錄下，所以我們不能直接掛載到 /var/lib/ghost 這個地方，而是要複製進去。
+
+```shell
+kubectl apply -f ghost.yaml
+```
+
+一旦 Pod 建立好後，可以 expose service：
+
+```shell
+kubectl expose deployments ghost --port=2368
+```
+
+一旦 Service expose，可以使用`kubectl proxy`指令來存取 Ghost server：
+
+```shell
+kubectl proxy
+```
+
+http://localhost:8001/api/v1/namespaces/default/services/ghost/proxy
+
+##### Ghost + MySQL
+
+當然這樣並不太能 scalable，可以把 config.js 修改成：
+
+```js
+...
+database: {
+  client: 'mysql',
+  connection: {
+    host : 'mysql',
+    user : 'root',
+    password : 'root',
+    database : 'ghost_db',
+    charset : 'utf8'
+  }
+},
+...
+```
+
+```shell
+kubectl create configmap ghost-config-mysql --from-file config.js
+```
+
+然後接著修改 Ghost deployment ConfigMap mount 的名字，從`config-map`修改成`config-map-mysql`：
+
+```yaml
+# ghost.yaml
+- configMap:
+  name: ghost-config-mysql
+```
+
+建立 MySQL 資料庫：
+
+```shell
+$ kubectl exec -ti mysql-zzmlw -- mysql -u root -p
+> create database ghost_db;
+```
+
+接著執行更新
+
+```shell
+kubectl apply -f ghost.yaml
+```
+
+因為現在 Ghost server 跟資料庫已經分開，所以可任意 scale Ghost server。
+
+### Redis
+
+是一個在記憶體 key/value 儲存方式，有很多額外的功能，對 Kubetnetes Pod 抽象性來說是一個很好的例子，因為 Redis 安裝需要兩個程式一起安裝。第一個`redis-server`負責儲存 key/value，另一個`redis-sentinel`負責實作 health check 和處理掛掉的 Redis。
+
+當 Redis 部署多個的時候，有一個會是 master server，他可以有 read 和 write 的功能。此外，其他的 replia server，他會複製資料寫到 master，可以被用來 load-balancing read 操作。如果原本的 master 掛了。任何的 replica 都有可能成為 master，這個掛掉的判斷會由 Redis sentinel 來執行。在我們部署的例子中，Redis server 跟 Redis sentinel 都會在同一個檔案裡。
+
+#### Configuring Redis
+
+我們要使用 ConfigMap 來設定我們的 Redis，Redis 在 master 和 slave 有分別的設定檔，為了設定 master 建立一個檔案叫做 master.conf：
+
+```conf
+# master.conf
+bind 0.0.0.0
+port 6379
+
+dir /redis-data
+```
+
+Redis 會直接綁定整個網路上，Redis 預設的 port 6379 和把資料存在 /redis-data。
+
+在 slave 裡的設定檔，加了單一的`slaveof`的方向：
+
+```conf
+# slave.conf
+bind 0.0.0.0
+port 6379
+
+dir .
+
+slaveof redis-0.redis 6379
+```
+
+我們使用`redis-0.redis`作為 master Redis 的名字，我們將會用 service 和 StatefulSet 設定這個名字。
+
+我們還需要 Redis sentinel 的設定檔：
+
+```conf
+# sentinel.conf
+bind 0.0.0.0
+port 26379
+
+sentinel monitor redis redis-0.redis 6379 2
+sentinel parallel-syncs redis 1
+sentinel down-after-milliseconds redis 10000
+sentinel failover-timeout redis 20000
+```
+
+我們建立好所有的設定檔，需要建立一個簡單的腳本，跑在 StatefulSet 裡面。
+
+這個腳本會簡單的判斷這個 Pod 的 hostname，而且決定這是 master 或是 slave 然後再開啟適當的設定檔：
+
+```bash
+# init.sh
+#!/bin/bash
+if [[ ${HOSTNAME} == 'redis-0' ]]; then
+  redis-server /redis-config/master.conf
+else
+  redis-server /redis-config/slave.conf
+fi
+```
+
+其他的腳本是給 sentinel，我們必須等到`redis-0.redis`的 DNS name 是可用的：
+
+```bash
+# sentinel.sh
+#!/bin/bash
+while ! ping -c 1 redis-0.redis; do
+    echo 'Waiting for server'
+    sleep 1
+done
+
+redis-sentinel /redis-config/sentinel.conf
+```
+
+現在我們需要打包所有的東西到 ConfigMap 物件：
+
+```shell
+kubectl create configmap \
+  --from-file=slave.conf=./slave.conf \
+  --from-file=master.conf=./master.conf \
+  --from-file=sentinel.conf=./sentinel.conf \
+  --from-file=init.sh=./init.sh \
+  --from-file=sentinel.sh=./sentinel.sh \
+  redis-config
+```
+
+#### Creating a Redis Service
+
+部署Redis的下一步是創建一個 Kubernetes 服務，為 Redis replica 提供命名和發現，像是`redis-0.redis`。我們建立 service 不需要 cluster IP。
+
+```yaml
+# redis-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+spec:
+  ports:
+  - port: 6379
+    name: peer
+  clusterIP: None
+  selector:
+    app: redis
+```
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/14-9-redis-service.yaml
+```
+
+不用擔心 service 的 Pod 不存在。Kubernetes 不在乎，它會在創建 Pod 時會正確的添加名稱。
+
+#### Deploying Redis
+
+我們要開始建立 Redis cluster，我們會使用 StatefulSet：
+
+```yaml
+# redis.yaml
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  name: redis
+spec:
+  replicas: 3
+  serviceName: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - command: [sh, -c, source /redis-config/init.sh ]
+        image: redis:3.2.7-alpine
+        name: redis
+        ports:
+        - containerPort: 6379
+          name: redis
+        volumeMounts:
+        - mountPath: /redis-config
+          name: config
+        - mountPath: /redis-data
+          name: data
+      - command: [sh, -c, source /redis-config/sentinel.sh]
+        image: redis:3.2.7-alpine
+        name: sentinel
+        volumeMounts:
+        - mountPath: /redis-config
+          name: config
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: redis-config
+        name: config
+      - emptyDir:
+        name: data
+```
+
+你會看到有兩個 conainer 在 Pod 裡面，一個是 Redis server 另一個是 sentinel 來監視 server。
+
+你會看到有兩個 volume 定義在 Pod 裡面，一個是 ConfigMap 的 volume 去設定兩個 Redis application，另一個是`emptyDir` volume，他會對應到 Redis server container，存所有應用程式的資料，所以他被重啟的話資料還會留著。
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-up-and-running/examples/master/14-10-redis.yaml
+```
+
+#### Playing with Our Redis Cluster
+
+我們可以看哪個 Redis sentinel 所監視到的是 master，我們可以使用`redis-cli`指令：
+
+```shell
+$ kubectl exec redis-2 -c redis -- redis-cli -p 26379 sentinel get-master-addr-by-name redis
+172.17.0.9
+6379
+```
+
+你可以列出 IP 來確定 master Redis 是那一台：
+
+```shell
+$ kubectl get pods -o wide
+NAME        READY     STATUS     RESTARTS   AGE       IP            NODE
+redis-0     2/2       Running    0          55s       172.17.0.9    minikube
+redis-1     2/2       Running    0          46s       172.17.0.12   minikube
+redis-2     2/2       Running    0          45s       172.17.0.13   minikube
+```
+
+接下來我們可以確認 replication 是真正運行的：
+
+```shell
+kubectl exec redis-2 -c redis -- redis-cli -p 6379 get foo
+```
+
+你會看到沒有任何資料回傳。
+
+我們試著寫一些資料進去：
+
+```shell
+$ kubectl exec redis-2 -c redis -- redis-cli -p 6379 set foo 10
+READONLY You can't write against a read only slave.
+```
+
+他會說你無法在 slave server 上寫入資料，我們改成 master `redis-0`：
+
+```shell
+$ kubectl exec redis-0 -c redis -- redis-cli -p 6379 set foo 10
+OK
+```
+
+現在我們再從 slave 讀取資料：
+
+```shell
+$ kubectl exec redis-2 -c redis -- redis-cli -p 6379 get foo
+10
+```
+
+他會印出正確的資料，你能看到資料在 master 和 slave 之間的複製。
 
 ## Reference
 
