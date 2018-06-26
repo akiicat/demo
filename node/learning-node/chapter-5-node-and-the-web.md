@@ -224,6 +224,417 @@ var options = {
 
 你也可以用`agent.maxFreeSockets`調最大的 socket pool 的數量，預設是 256 個，注意，調高的話會使用更多的記憶體和資源。
 
+## What's Involved in Creating a Static Web Server
+
+ 我們已經有所有功能能建立間單的 router 或是服務 static files。但是要可以使用跟可以簡單地使用是兩回事。
+
+要建立一個簡單的靜態檔案的 server 有幾個步驟：
+
+1. 建立 HTTP server 且等待請求。
+2. 當請求送達的時候，分析請求的 URL 決定回傳的檔案。
+3. 檢查檔案是否存在。
+4. 如果檔案不存在，直接 response。
+5. 如果檔案存在，打開檔案且讀取它。
+6. 準備 response header。
+7. 把檔案寫到 response。
+8. 等待下一個請求。
+
+我們只需要 core module 就能執行這些功能。建立 HTTP server 和讀檔分別需要 HTTP module 和 File System module。此外，我們想要將路徑定義在全域變數，或使用`__dirname`。
+
+```js
+// chap5-3.js
+var http = require('http'),
+    fs = require('fs'),
+    base = '/home/examples/public_html';
+
+http.createServer(function (req, res) {
+
+   pathname = base + req.url;
+   console.log(pathname);
+
+}).listen(8124);
+
+console.log('Server web running at 8124');
+```
+
+我們將第一章 Hello World 的範例拿來改寫，`http.createServer()`建立 server，callback 有兩個參數 request 和 response。可以直接請求`request.url`獲得 URL 路徑。
+
+[Port 列表](https://en.wikipedia.org/wiki/List_of_TCP_and_UDP_port_numbers#Well-known_ports)，Port 低於 1024 都需要 root 權限。
+
+瀏覽器會一直轉圈圈是正常的，因為我們沒有回傳給 reponse。
+
+我們可以使用`fs.stat()`檢查檔案是否存在。
+
+在檢查後移除檔案的問題，在`fs.stat()`檢查檔案和開啟檔案之間，如果檔案被移除了會發問題，可以直接使用像是`fs.open()`直接將檔案擋開，然後使用`fs.createReadStream()`讀取檔案，但是他不會提供這個是檔案還是資料夾的訊息，而且也不會提供檔案是否遺失或是被鎖住的訊息。所以使用`fs.stat()`檢查，不過在開檔的時候要再檢查一次。
+
+說到讀檔，我們試著使用`fs.readFile()`讀取檔案內容，問題是`fs.readFile()`會想把所有檔案載入到記憶體。文件有可能會很大，此外可能同時間有很多的請求。像是`fs.readFile()`就沒辦法 scale。
+
+透過預設的`fs.createReadStream()`的方法建立 read stream，這會比較簡單 pipe 檔案內容，寫入到 HTTP response 物件。因為檔案在結束的時候會呼叫`end`方法，所以我們不需要處理它。
+
+```js
+// example5-3.js
+var http = require('http'),
+    fs   = require('fs'),
+    base = __dirname;
+
+http.createServer(function (req, res) {
+
+   pathname = base + req.url;
+   console.log(pathname);
+
+   fs.stat(pathname, function(err,stats) {
+      if (err) {
+        console.log(err);
+        res.writeHead(404);
+        res.write('Resource missing 404\n');
+        res.end();
+      } else {
+         res.setHeader('Content-Type', 'text/html');
+
+         // create and pipe readable stream
+         var file = fs.createReadStream(pathname);
+
+         file.on("open", function() {
+            res.statusCode = 200;
+            file.pipe(res);
+         });
+
+         file.on("error", function(err) {
+           console.log(err);
+           res.writeHead(403);
+           res.write('file missing or permission problem');
+           res.end();
+         });
+
+       }
+    });
+}).listen(8124);
+
+console.log('Server running at 8124');
+```
+
+read stream 有兩個有趣的事件：`open`跟`error`。當準備好 stream 的時候就會呼叫`open`事件，發生錯誤就呼叫`error`事件。如果再檢查完，檔案刪除的話，這將就會發生錯誤，或是讀取到目錄，他就會回傳 403 的錯誤。
+
+應用程式會在`open`的 callback function 裡呼叫`pipe`方法。
+
+可以使用簡單的 HTML 測試：
+
+```html
+<!-- index.html -->
+<!DOCTYPE html>
+<head>
+   <title>Test</title>
+   <meta charset="utf-8" />
+   <script>
+   'use strict';
+const foo = 1;
+typeof foo === 'number';
+</script> 
+</head>
+<body>
+<img src="./phoenix5a.png" />
+</body>
+```
+
+```html
+<!-- video.html -->
+<!DOCTYPE html>
+<head>
+   <title>Video</title>
+   <meta charset="utf-8" />
+</head>
+<body>
+<img src="./phoenix5a.png" />
+
+   <video id="meadow" controls>
+      <source src="videofile.mp4" />
+      <source src="videofile.ogv" />
+      <source src="videofile.webm" />
+   </video>
+</body>
+```
+
+如果找不到檔案救回傳 404 的錯誤
+
+```shell
+$ node example5-3.js 
+Server running at 8124
+/Users/akiicat/Github/LearningNode2/chap5/video.html
+/Users/akiicat/Github/LearningNode2/chap5/phoenix5a.png
+/Users/akiicat/Github/LearningNode2/chap5/videofile.mp4
+{ Error: ENOENT: no such file or directory, stat '/Users/akiicat/Github/LearningNode2/chap5/videofile.mp4'
+    at Error (native)
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'stat',
+  path: '/Users/akiicat/Github/LearningNode2/chap5/videofile.mp4' }
+/Users/akiicat/Github/LearningNode2/chap5/videofile.ogv
+{ Error: ENOENT: no such file or directory, stat '/Users/akiicat/Github/LearningNode2/chap5/videofile.ogv'
+    at Error (native)
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'stat',
+  path: '/Users/akiicat/Github/LearningNode2/chap5/videofile.ogv' }
+/Users/akiicat/Github/LearningNode2/chap5/videofile.webm
+{ Error: ENOENT: no such file or directory, stat '/Users/akiicat/Github/LearningNode2/chap5/videofile.webm'
+    at Error (native)
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'stat',
+  path: '/Users/akiicat/Github/LearningNode2/chap5/videofile.webm' }
+```
+
+每個影片回傳的 content type 是`text/html`，正確的做法要使用 mime type，可以安裝 mime 套件。
+
+```shell
+npm install mime
+```
+
+給 mime 套件檔名，它就能回傳正確的 mime type，然後回傳到 content type。
+
+```js
+var mime = require('mime');
+```
+
+content type 會放在 response header：
+
+```js
+// content type
+var type = mime.getType(pathname);
+console.log(type);
+res.setHeader('Content-Type', type);
+```
+
+當我們存取 video 的時候，現在正常了，只有在存取路徑的時候，才會發生錯誤。
+
+現在我們不必檢查檔案是否存在，只需要檢查是目錄還是檔案，如果目錄被存取的話，就要顯示錯誤。
+
+這裡有另外一個更動，base path 使用`path.normalize`正規化路徑，用於不同環境時，Windows 也可以運作。
+
+最後的版本，當檔案不存在時會回傳 404，如果沒有權限的話會回傳 403：
+
+```js
+// example5-4.js
+var http = require('http'),
+    url =  require('url'),
+    fs   = require('fs'),
+    mime = require('mime'),
+    path = require('path');
+
+var base = __dirname;
+
+http.createServer(function (req, res) {
+
+   pathname = path.normalize(base + req.url);
+   console.log(pathname);
+
+   fs.stat(pathname, function(err, stats) {
+      if (err) {
+        res.writeHead(404);
+        res.write('Resource missing 404\n');
+        res.end();
+      } else if (stats.isFile()) {
+         // content type
+         var type = mime.getType(pathname);
+         console.log(type);
+         res.setHeader('Content-Type', type);
+
+         // create and pipe readable stream
+         var file = fs.createReadStream(pathname);
+         file.on("open", function() {
+            // 200 status - found, no errors
+            res.statusCode = 200;
+            file.pipe(res);
+         });
+         file.on("error", function(err) {
+           console.log(err);
+           res.statusCode = 403;
+           res.write('file permission');
+           res.end();
+         });
+       } else {
+        res.writeHead(403);
+        res.write('Directory access is forbidden');
+        res.end();
+       }
+    });
+}).listen(8124);
+console.log('Server running at 8124');
+```
+
+```shell
+$ node example5-4.js 
+Server running at 8124
+/Users/akiicat/Github/LearningNode2/chap5/video.html
+text/html
+/Users/akiicat/Github/LearningNode2/chap5/phoenix5a.png
+image/png
+/Users/akiicat/Github/LearningNode2/chap5/videofile.mp4
+/Users/akiicat/Github/LearningNode2/chap5/videofile.ogv
+/Users/akiicat/Github/LearningNode2/chap5/videofile.webm
+```
+
+`__dirname`可以獲得當前執行的資料夾。
+
+雖然程式可以運作，不過他還不能處理其他的請秀，處理 security 和 caching，而且也沒有正確的處理影片的請求。有很多的問題困擾著，這就是為什麼大家會想使用更複雜的系統，像是 Express。
+
+## Using Apache to Proxy a Node Application
+
+使用 Apache 好的地方是它很強大、安全、功能又多，缺點是每個 request 都會建立一條新的 thread。
+
+```shell
+a2enmod proxy
+a2enmod proxy_http
+```
+
+```conf
+<VirtualHost ipaddress:80>
+	ServerAdmin xxx@gmail.com 
+	ServerName akiicat.com
+	
+	ErrorLog path-to-logs/error.log
+	CustomLog path-to-logs/access.log combined
+	
+	ProxyRequests off
+	
+	<Location />
+		ProxyPass http://ipaddress:2368/
+		ProxyPassReverse http://ipaddress:2368/
+	</Location>
+</VirtualHost>
+```
+
+```shell
+a2ensite akiicat.com
+service apache2 reload
+```
+
+如果是更進階的話可以使用 iptable
+
+```shell
+# ubuntu
+iptables -A input -i eth0 -p tcp --dport 2368 -j DROP
+```
+
+## Parsing the Query with Query String
+
+Query String 套件唯一的目標就是準備且執行 query string。
+
+你可以使用`querystring.parse()`把收到的 query string 轉換成物件。query string 預設的分隔符號是`&amp;`，function 的第二個參數可以覆蓋它。指派符號`=`可以在第三個參數覆蓋預設值。第四個參數包含`decodeURIComponent`，預設是`querystring.unescape()`，如果 query string 不是 UTF-8 的話要改它。
+
+要看`querystring.parse()`是如何運作的話，先假設 query 如下：
+
+```
+somedomain.com/?value1=valueone&value1=valueoneb&value2=valuetwo
+```
+
+使用`querystring.parse()`回傳的物件：
+
+```json
+{
+    value1: [ 'valueone', 'valueoneb' ],
+    value2: 'valuetwo'
+}
+```
+
+我們可以將物件傳入`querystrin.stringify()`進行編碼，你會獲得正確的 query string。
+
+```shell
+$ node
+> str = 'msg=Hello World'
+'msg=Hello World'
+> querystring.parse(str)
+{ msg: 'Hello World' }
+> querystring.stringify(_)
+'msg=Hello%20World'
+```
+
+注意，空白鍵被替換成跳脫字元，`querystring.stringify()`提供一些選擇性的參數，你可以傳入你自己的`encodeURIComponent`，預設值是`stringify.escape()`。
+
+## DNS Resolution
+
+並不是所有的應用程式都需要使用 DNS 的服務，但如果你需要的話，Node 也提供了 core DNS module 的功能。
+
+有兩個 DNS 套件的 function：`dns.lookup()`和`dns.resolve()`。
+
+`dns.lookup()`會回傳 domain name 的 IP address：
+
+```js
+// dns-lookup.js
+var dns = require('dns');
+
+dns.lookup('oreilly.com', function(err, address, family) {
+    if (err) return console.log(err);
+
+    console.log(address);
+    console.log(family);
+})
+```
+
+```shell
+$ node dns-lookup.js 
+199.27.145.64
+4
+```
+
+family 的值不是 4 就是 6 取決於你的 IP address 是 IPv4 還是 IPv6。
+
+你可以給定`options`物件：
+
+- `family`：數字 4 或 6，他會對應你想顯示的地址 IPv4 或 IPv6。
+- `hints`：支援數字的`getaddrinfo` flag。
+- `all`：如果是`true`會回傳所有 address，預設是`false`。
+
+```js
+dns.lookup('oreilly.com', {all: true}, function(err, family) {
+    if (err) return console.log(err);
+    
+    console.log(family);
+})
+```
+
+```json
+[ { address: '199.27.145.64', family: 4 },
+  { address: '199.27.145.65', family: 4 } ]
+```
+
+`dns.resolve()`解析某個 record type 的 hostname：
+
+- `A`：Default IPv4 address
+- `AAAA`：IPv6 address
+- `MX`：Ｍail exchange record
+- `TXT`：Text records
+- `SRV`：SRV records
+- `PTR`：Used for reverse IP lookup
+- `NS`：Name server
+- `CNAME`：Canonical name records
+- `SOA`：Start of authority record
+
+```js
+dns.resolve('oreilly.com', 'MX', function(err, addresses) {
+    if (err) return err;
+    console.log(addresses);
+})
+```
+
+```json
+[ { exchange: 'aspmx.l.google.com', priority: 1 },
+  { exchange: 'aspmx2.googlemail.com', priority: 10 },
+  { exchange: 'alt2.aspmx.l.google.com', priority: 5 },
+  { exchange: 'alt1.aspmx.l.google.com', priority: 5 },
+  { exchange: 'aspmx3.googlemail.com', priority: 10 } ]
+```
+
+
+
+
+
+
+
+
+
+
+
 
 
 
