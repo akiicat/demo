@@ -1,5 +1,7 @@
 # The Node Environment
 
+[程式碼範例](https://github.com/shelleyp/LearningNode2)的 git 版本`98f60c2d2cf87b7647f9ad48a5f24fe48e55e069`
+
 ## 安裝 Node
 
 自已在 ubuntu 上 compile 的話：
