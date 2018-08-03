@@ -221,19 +221,65 @@ IP-213-32.cs.nc 0.0.0.0         255.255.255.224 U     0      0        0 enp3s0
 
 IP 會從收到的 packet 套用 Genmask 在 destination address 上，去看是否符合 table 裡面的 destination value。
 
-如果符合 tabel 裡的 entry，gateway 欄位告訴 IP 要如何達到目的地
+當符合 tabel 裡的 entry，gateway 欄位告訴 IP 要如何達到目的地。如果 Gateway 的欄位包含 router 的 IP address，那就使用這個 router。如果 Gateway 的欄位包含所有 0 (0.0.0.0)，這個 destination network 會是一個直接連線的 network，然後 gateway 是電腦的 network interface。每個 entry 的最後一個欄位是 route 所使用的 network interface。
 
+> destination、gateway、mask、interface 定義了 route。
 
+其他的四個欄位 Flags、Metric、Ref、Use 只是呈現 route 支援的訊息，在不同的作業系統精準度不一樣，有些作業系統還不會使用。Metric 只會運行在某些 Routing Information Protocol (RIP) 下。不要被這些資訊誤導了，routing table 的核心就是 route，是由 destination、gateway、mask、interface 所組成的。
 
-## Address Resolution
+routing cache：
 
-## Protocols, Ports, and Sockets
+```shell
+route -Cn
+```
 
+routing cache 會紀錄 source 的資訊，他會顯示建立過的 route。routing table 會做 routing 的決策，routing cache 會使用在這個決策之後。
 
+Solaris system：
 
+- `-n`：顯示數字形式
+- `-r`：顯示 routing table
 
+```shell
+$ netstat -nr
+Routing tables
 
-## TCP/IP routing
+Internet:
+Destination        Gateway            Flags        Refs      Use   Netif Expire
+default            192.168.0.1        UGSc           27        0     en0
+127                127.0.0.1          UCS             0        0     lo0
+127.0.0.1          127.0.0.1          UH              2  3965867     lo0
+169.254            link#4             UCS             0        0     en0
+192.168.0          link#4             UCS             0        0     en0
+192.168.0.1/32     link#4             UCS             1        0     en0
+192.168.0.1        28:3b:82:3d:7b:8b  UHLWIir        46     2021     en0   1170
+192.168.0.101/32   link#4             UCS             0        0     en0
+192.168.99         link#14            UC              1        0 vboxnet
+224.0.0/4          link#4             UmCS            2        0     en0
+224.0.0.251        1:0:5e:0:0:fb      UHmLWI          0        0     en0
+239.255.255.250    1:0:5e:7f:ff:fa    UHmLWI          0      200     en0
+255.255.255.255/32 link#4             UCS             0        0     en0
+```
+
+H flag 會 route 到特定的 host (127.0.0.1)，而不是 route 到整個 network (127.0.0.0)。
+
+default 如果出現在 Destination 就會是 *default route*，如果是出現在 gateway 就是 *default gateway*。
+
+default route 像是一個 IP address 裡面沒有 172.168.16.0 的 network，如果有收到任何 datagram，他就會送到 default gateway 192.168.0.1。
+
+出現在 routing table 裡的 gateway 都會連線到區域系統的 network
+
+host 使用 gatetway 所到達到網路，必須是在 IP 的子網路上。
+
+在下圖，想像的網路裡有兩個 hosts 跟一個 gateway，他們的 IP Layer 被取代成 routing table，呈現了目標的 network 跟 gateway，藉此達到他們目的地。假設他們使用在 network 172.16.0.0 的 address mask 是 255.255.255.0。當 source host (172.16.12.2) 傳送資料到 destination host (172.16.1.2)，host address 會套用 address mask 來決定，他在 routing table 中所要找尋的目標 network address 172.16.1.0。在 source host 的 routing table 反映了前往 172.16.1.0 的資料會送到 gateway 172.16.12.3。source host 會把 packet 發往 gateway。Gateway 也會執行相同的步驟，查看 routing table 的 destination address，Gateway 172.16.12.3 會直把 packet 送往自己的 gateway 172.16.12.5 interface。檢查 routing table ，所有系統列在 network 上的 gateways，gateways 會直接連著 networks。對於 172.16.12.2 跟 172.16.12.3 兩個的 default gateway 是 172.16.12.1，但是 172.16.1.2 沒辦法直接到達 network 172.16.12.0 ，所以 172.16.1.2 有不同的 default route。
+
+![Figure 2-4](images/2-4.png)
+
+routing table 不會包含 end-to-end 的 routes，route 只會指向到下一個 gateway，又稱作為 *next hop*，會沿著 path (network or route) 到下一個 destination network。host 傳送資料會依賴在 local gateway，gateway 則會依賴其他的 gateway，datagram 會從一個 gateway 移動到另一個 gateway，datagram 最後會移動到 destination network 的 gateway，這就是最後的 gateway，最後會把資料傳送到 destination host。
+
+IP 使用 address 的 network 部分 (mask 過後)，在 network 之間 route the datagram。full address 包括了 host information，會用來做最後的傳遞，當 datagram 已經到達了 destination network 的時候。
+
+### TCP/IP routing
 
 | Item                | Description                                                  |
 | ------------------- | ------------------------------------------------------------ |
@@ -244,6 +290,237 @@ IP 會從收到的 packet 套用 Genmask 在 destination address 上，去看是
 | **broadcast route** | Default route for all broadcast packets. Two broadcast routes are automatically assigned to each subnet on which the network has an IP (one to the subnet address and one to the broadcast address of the subnet). |
 
 
+
+## Address Resolution
+
+IP address 和 routing table 會把 datagram 帶往到特定的 physical network，但是當橫跨網路傳送資料的時候，他必須遵守在那個 network 上的 physical layer protocol。在 TCP/IP network 層下面的 physical network (layer 2) 並不了解 IP addressing。physical netowrks 有他自己的 addressing schemes，而且不同的 physical networks 的 types 一樣有很多不同的 addressing schemes。其中一個 network access protocols 的工作是將 IP address 映射 (map) 到 physical network address。(注意，是 map 而不是 convert)
+
+大多數 Network Access Layer 常見功能的範例是將 IP address 的轉送到 Ethernet address，執行這個 function 的 protocol 是 *Address Resolution Protocol* (ARP)，定義在 RFC 826。
+
+ARP 軟體負責 IP address 跟 Ethernet address 之間轉換的 table，這個 table 會動態的建立。當 ARP 收到一個 request，這個 request 會轉換成 IP address，這個 IP address 會檢查 table 裡面的 address。如果有找到，會把 Ethernet address 回傳給正在請求的軟體。如果沒有找到，ARP 會把 packet 廣播給 Ethernet 上的每一個 host。packet 會包含 IP address，為了找尋 Ethernet address。如果 receiving host 發現 IP address 是自己的話，他會回傳自己的 Ethernet address 給 requesting host。response 會被 cache 在 ARP table。
+
+`arp` 指令顯示 ARP table 的內容，顯示整個 ARP table，可以使用 `arp -a`。透過 `arp` 可以指定要顯示的 hostname：
+
+http://linux-ip.net/html/tools-arp.html
+
+```shell
+$ arp IP-213-40.cs.nctu.edu.tw
+Address                  HWtype  HWaddress           Flags Mask            Iface
+IP-213-40.cs.nctu.edu.t  ether   b8:27:eb:df:76:85   C                     enp3s0
+```
+
+`-a` 選項查看所有 table：
+
+```shell
+# mac
+$ arp -a
+? (172.17.0.3) at 02:42:ac:11:00:03 [ether] on docker0
+IP-213-40.cs.nctu.edu.tw (140.113.213.40) at b8:27:eb:df:76:85 [ether] on enp3s0
+? (172.17.0.2) at 02:42:ac:11:00:02 [ether] on docker0
+? (172.17.0.4) at 02:42:ac:11:00:04 [ether] on docker0
+IP-213-33.cs.nctu.edu.tw (140.113.213.33) at d4:d7:48:83:ba:51 [ether] on enp3s0
+$ arp -la
+Neighbor                Linklayer Address Expire(O) Expire(I)    Netif Refs Prbs
+172.18.10.216           30:59:b7:f:e:8c   1m18s     1m31s          en0    1
+172.18.15.254           58:0:bb:56:41:f0  1m16s     1m16s          en0    1
+172.18.15.255           ff:ff:ff:ff:ff:ff (none)    (none)         en0
+224.0.0.251             1:0:5e:0:0:fb     (none)    (none)         en0
+239.255.255.250         1:0:5e:7f:ff:fa   (none)    (none)         en0
+
+# raspberrypi
+$ arp -a
+IP-213-33.cs.nctu.edu.tw (140.113.213.33) at d4:d7:48:83:ba:51 [ether] on eth0
+$ arp -e
+Address                  HWtype  HWaddress           Flags Mask            Iface
+IP-213-33.cs.nctu.edu.tw ether   d4:d7:48:83:ba:51   C                     eth0
+$ arp -n
+Address                  HWtype  HWaddress           Flags Mask            Iface
+140.113.213.33           ether   d4:d7:48:83:ba:51   C                     eth0
+
+Windows：arp -a
+Linux：arp -nv
+MacOS：arp -nla
+```
+
+MAC address = hardware address = Ethernet address
+
+```shell
+% arp -a
+Net to Media Table: IPv4
+Device IP Address           Mask            Flags Phys Addr
+------ -------------------- --------------- ----- ---------------
+dnet0  rodent               255.255.255.255       00:50:ba:3f:c2:5e
+dnet0  crab                 255.255.255.255 SP    00:00:c0:dd:d4:da
+dnet0  224.0.0.0            240.0.0.0       SM    01:00:5e:00:00:00
+```
+
+表格告訴你說當 datagram 前往到 *rodent* ，他會把 datagram 放到 Ethernet frames 然後把他們傳送到 Ethernet address 00:50:ba:3f:c2:5e。
+
+作為 *crab* query 的結果， *rodent* entry 會動態的加入。作為 *crab* 配置的結果，*crab* 跟 *224.0.0.0* 都是靜態的 entry，因為兩個 entry 都有 S (static) 的 Flag。224.0.0.0 entry 是 multicast address，M 代表 mapping，只會用在 multicast entry，在廣播的媒介上，像是 Ethernet，Ethernet multicast addres 用於最終傳送到 multicast group。
+
+P flag 代表這個 entry 將會被 published，published flag 代表當 ARP query 收到給 *crab* 的 IP address，系統就會回答 Ethernet address 00:00:c0:dd:d4:da 給它。這很合理，因為這是在 *crab* 上的 ARP table。也能夠 pulish Ethernet address 給其他的 hosts，並不只會給 local host，回應其他電腦的 ARP query 又稱作為 *proxy ARP*。
+
+舉例來說，假設有個 server 叫 *24seven*，然後有一個叫做 *clock* 的遠端系統，透過電話線連接到 server。*24seven* 的管理員並不用設定 routing 到遠端系統，*24seven* 的管理員只需要在 ARP table 裡面放一個 static 且 pulished 的 entry，裡面包含著 *clock* 的 IP address 跟 *24seven* 的 Ethernet address。現在，只要 *24seven* 聽到 ARP query 是 clock 的 IP address 的話，它就會回應自己的 Ethernet address。因此其他系統傳送給 *clock* 的封包會到 *24seven*，然後 *24seven* 會透過電話線 forward 封包給 *clock*。proxy ARP 用來幫助無法自己回應的系統。
+
+正常來說不需要注意 ARP tables，因為他們是由非常穩定的 ARP protocol 自動建立的，如果有什麼出錯，可以手動調整 ARP table。(第十三章)
+
+## Protocols, Ports, and Sockets
+
+一但資料 route 穿越了網路，而且傳遞到特定的 host，必須要到正確的 user 或 process，當資料在 TCP/IP layer 上下移動的時候，在每一個 layer 之間，要有一個機制來傳遞正確的 protocol，系統必須能夠將資料合併成單一的 data stream，資料會從應用程式傳送到 transport protocols，從 transport protocols 到 Interent Protocol，會把資料合併成單一的 data stream 的過程稱作為 *multiplexing*。
+
+從網路抵達的資料必須 *demultiplexed*：會有很多分裂的資料到達 process。為了完成這個任務，IP 使用 *protocol numbers*  來識別 transport protocol，transport protocol 則使用 *port numbers* 來識別應用程式。
+
+有些 protocol number 跟 port number 是保留的 number，用來識別 *well-known* services。像是 FTP 和 Telnet，在網路上很常見，這些數字是由 Internet Assigned Numbers Authority (IANA) 所指派的，http://www.iana.org。Unix 系統分別用兩個不同的檔案定義 protocol 跟 port number。
+
+### Protocol Numbers
+
+protocol number 是 single byte 在 datagram header 的第三個 word 裡，資料會從 IP 層網上傳，這個值可以辨識 protocol。
+
+在 Unix 系統，protocol number 定義在 */etc/protocols* 這個檔案裡面：
+
+```shell
+$ cat /etc/protocols 
+#
+# Internet protocols
+#
+# $FreeBSD$
+#	from: @(#)protocols	5.1 (Berkeley) 4/17/89
+#
+# See also http://www.iana.org/assignments/protocol-numbers
+#
+ip	0	IP		# internet protocol, pseudo protocol number
+#hopopt	0	HOPOPT		# hop-by-hop options for ipv6
+icmp	1	ICMP		# internet control message protocol
+igmp	2	IGMP		# internet group management protocol
+ggp	3	GGP		# gateway-gateway protocol
+ipencap	4	IP-ENCAP	# IP encapsulated in IP (officially ``IP'')
+st2	5	ST2		# ST2 datagram mode (RFC 1819) (officially ``ST'')
+tcp	6	TCP		# transmission control protocol
+cbt	7	CBT		# CBT, Tony Ballardie <A.Ballardie@cs.ucl.ac.uk>
+egp	8	EGP		# exterior gateway protocol
+igp	9	IGP		# any private interior gateway (Cisco: for IGRP)
+bbn-rcc	10	BBN-RCC-MON	# BBN RCC Monitoring
+nvp	11	NVP-II		# Network Voice Protocol
+pup	12	PUP		# PARC universal packet protocol
+argus	13	ARGUS		# ARGUS
+emcon	14	EMCON		# EMCON
+xnet	15	XNET		# Cross Net Debugger
+chaos	16	CHAOS		# Chaos
+udp	17	UDP		# user datagram protocol
+mux	18	MUX		# Multiplexing protocol
+dcn	19	DCN-MEAS	# DCN Measurement Subsystems
+hmp	20	HMP		# host monitoring protocol
+```
+
+在 IANA 的網頁上可以看到更多的 protocol，然而系統只需要包含系統需要用的 protocol number。
+
+這張表格真正的意思是，當有一個 datagram 抵達，而且 destination address 符合 local IP address，IP layer 知道他要把 datagram 傳到哪一個 transport protocols，要決定哪一個 protocol 應該收到 datagram，IP 會檢查 datagram 的 protocol number。用這個表格，如果 datagram 的 protocol number 是 6 的話，IP 會傳遞 datagram 到 TCP。如果 protocol number 是 17，IP 傳遞 datagram 到 UDP。TCP 跟 UDP 都是 transport layer 的 services。
+
+### Port Numbers
+
+IP 把進來的資料傳到 transport protocol 之後，transport protocol 會傳送資料到正確到應用程式 process。應用程式 process (又稱作為 network services) 會由 port number 辨識，port number 是 16-bit 的值，有 source port number 跟 destination port number，都會在 TCP segment 和 UDP packet 的第一個 word。
+
+Port number 小於 1024 是讓 well-kenown services 保留的 (像是 FTP 和 Telnet)，是由 IANA 所指派的，使用的時候需要管理員權限。ports 在 1024 到 49151 是 **registered ports**，IANA 試著維護 services 的 registry，不會在這個 range 指派 port。port number 從 49152 到 65535 是 **private ports**，private ports 可以給任何人使用。
+
+Port number 在 transport layer protocol 之間不是唯一的，只有在特定的 transport protocol 裡面才是唯一的，換句話說，TCP 和 UDP 可以指派同一個 port number，protocol number 跟 port number 的結合，可以辨識唯一一個特定的 process，讓資料可以傳遞。
+
+在 Unix 系統上， port number 定義在 */etc/services* 檔案裡面
+
+```shell
+$ cat /etc/services 
+#
+# Network services, Internet style
+#
+# Note that it is presently the policy of IANA to assign a single well-known
+# port number for both TCP and UDP; hence, most entries here have two entries
+# even if the protocol doesn't support UDP operations.
+#
+# The latest IANA port assignments can be gotten from
+#
+#	http://www.iana.org/assignments/port-numbers
+#
+# The Well Known Ports are those from 0 through 1023.
+# The Registered Ports are those from 1024 through 49151
+# The Dynamic and/or Private Ports are those from 49152 through 65535
+#
+# $FreeBSD: src/etc/services,v 1.89 2002/12/17 23:59:10 eric Exp $
+#	From: @(#)services	5.8 (Berkeley) 5/9/91
+#
+# WELL KNOWN PORT NUMBERS
+#
+rtmp              1/ddp    #Routing Table Maintenance Protocol
+tcpmux            1/udp     # TCP Port Service Multiplexer
+tcpmux            1/tcp     # TCP Port Service Multiplexer
+nbp               2/ddp    #Name Binding Protocol
+compressnet       2/udp     # Management Utility
+compressnet       2/tcp     # Management Utility
+compressnet       3/udp     # Compression Process
+compressnet       3/tcp     # Compression Process
+echo              4/ddp    #AppleTalk Echo Protocol
+rje               5/udp     # Remote Job Entry
+rje               5/tcp     # Remote Job Entry
+zip               6/ddp    #Zone Information Protocol
+echo              7/udp     # Echo
+echo              7/tcp     # Echo
+discard           9/udp     # Discard
+discard           9/tcp     # Discard
+systat           11/udp     # Active Users
+systat           11/tcp     # Active Users
+daytime          13/udp     # Daytime (RFC 867)
+daytime          13/tcp     # Daytime (RFC 867)
+qotd             17/udp     # Quote of the Day
+qotd             17/tcp     # Quote of the Day
+msp              18/udp     # Message Send Protocol
+msp              18/tcp     # Message Send Protocol
+chargen          19/udp     # Character Generator
+chargen          19/tcp     # Character Generator
+ftp-data         20/udp     # File Transfer [Default Data]
+ftp-data         20/tcp     # File Transfer [Default Data]
+ftp              21/udp     # File Transfer [Control]
+ftp              21/tcp     # File Transfer [Control]
+ssh              22/udp     # SSH Remote Login Protocol
+ssh              22/tcp     # SSH Remote Login Protocol
+telnet           23/udp     # Telnet
+telnet           23/tcp     # Telnet
+
+```
+
+檔案格式跟 */etc/protocols* 非常像，第一欄是 service 的名稱，接下來是 number/protocol 連在 service 上，port number 會有一對的 transport protocol names，因為不同 transport protocol 可能會使用相同的 port number。
+
+![Figure 2-5](images/2-5.png)
+
+*/etc/services* 檔案不包含每個重要 nerwork services 的 port number。你在 *services* 檔案找不到 *Remote Procedure Call* (RPC) 的 port number。Sun 開發了一種不同的技術，用於為 RPC service 保留 port，而不涉及從 IANA 所指派 well-known 的 port。RPC service 通常使用 registered port numbers，不需要正式分配。當 RPC service 啟動時，它會使用 `portmapper` 註冊 port number。`portmapper` 是一個追蹤 RPC service port 使用情況的程式。當 client 想要使用 RPC service 時，它會查詢 server 上運行的 `portmapper`，然後分配 port 給 service。client 可以找到 `portmapper`，因為它被分配在 well-known port number 是 111。`portmapper` 讓 RPC service 可以廣泛的安裝，不需要知道 well-known port。
+
+```shell
+$ cat /etc/services 
+...
+sunrpc          111/udp     # SUN Remote Procedure Call
+sunrpc          111/tcp     # SUN Remote Procedure Call
+```
+
+### Sockets
+
+well-known port 是標準的 port number，能夠讓遠端電腦知道哪一個 port 連到特定的 network service。這簡化了連線的過程，因為 sender 跟 receiver 事前都知道資料前往特定的 process 會使用特定的 port。舉例來說，所有系統都提供了 Telnet 在 port 23。
+
+另一個同等重要的 port number 叫做 *dynamically allocated port*，就如同名字所說的，dynamically allocated port 不是預先指派的，只又在需要的時候，才會指派給 process，系統確保不會指派到相同的 port number 而且 port number 會超過 1024。
+
+Dynamically allocated ports 提供使用者彈性的需求。如果有一個 telnet 使用者在 source 跟 destination port 指派了 23，那如果有第二個使用者要指派哪一個 port？為了辨別每一個連線，source port 會被指派 dynamically allocated port number，destination port 會使用 well-known port number。
+
+在 telnet 的例子，第一個使用者會有一個隨機的 source port number 和 destination port 23，第二個使用者會使用不同的隨機 source port number 跟相同的 destination port 23，這是 *pair* 的 port numbers，source 跟 destination，可以辨識唯一的 network connection。destination host 知道 source port，因為在 TCP segment header 和 UDP packet header 裡面都有提供。兩個 host 都知道 destination port 因為是 well-known port。
+
+下圖是 TCP handshake 的過程：
+
+![Figure 2-6](images/2-6.png)
+
+結合 IP address 跟 port number 又稱作為 *socket*，一個 socket 可以在整個 Internet 裡辨識唯一的 network process，有時候 socket 跟 port number 是可以交換使用的，實際上，well-known services 很常被說成 well-known sockets。一對 socket 可以定義一個連線，像是 connection-oriented protocol (TCP)，一個 socket 用來 receiving host，另一個用來 sending host。
+
+## Summary
+
+本章介紹了，資料通過 global Internet，如何從 source computer 上的一個特定 process 傳送到另一端的 single process。TCP/IP 使用唯一的 global address 來識別 Internet 上的任何電腦。它使用 protocol number 和 port number 來辨識唯一的 process。
+
+每個系統維護一個如何到達 remote network 的 routing table。routing table 通常包含一個 default route，如果到達不了 remote network 特定的 route，就使用這個 route。route 只標示到下一台機器的路徑。TCP/IP 使用 hop-by-hop 的方式來接近目的地，直到 datagram 最終到達 destination network。
+
+在 destination network 上，最後一次的傳遞會使用完整的 IP address (包括 host 的部分)，而且會把 IP 轉換成 physical layer address。Address Resoluation Protocol (ARP)，是一個將 IP address 轉換成 physical layer address 的 protocol，它在最後傳遞的時候會將 IP address 轉換成 Ethernet address。
 
 
 
