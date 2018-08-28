@@ -78,3 +78,18 @@ Scanning for BLE devices...
 }
 ```
 
+## Trouble Shoot
+
+上一次執行完成後，沒有把藍牙關掉的話，下一次執行的時候將會出錯，如果壞掉的話，記得要重新開啟：
+
+```shell
+sudo systemctl restart bluetooth
+```
+
+或是在每一次執行程式碼的時候，先將之前執行過的藍芽關掉，再重新打開：
+
+```js
+noble.stopScanning();
+noble.startScanning([], false, function(err) { ... })
+```
+
