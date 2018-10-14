@@ -243,3 +243,49 @@ IdentityFile /Users/akiicat/Github/playbooks/.vagrant/machines/default/virtualbo
 ssh vagrant@127.0.0.1 -p 2222 -i /Users/akiicat/Github/playbooks/.vagrant/machines/default/virtualbox/private_key
 ```
 
+### 設定 Ansible 的 Server
+
+Ansible 只能管理確切知道的 server，設定在 inventory file 裡面。每個 server 都需要名字，也可以給他 alias。
+
+如果使用 INI 格式的話，要在 hosts 檔名後面加上 `.ini` 的副檔名，alias 的名稱是 `testserver`，且一個 server 以一行為單位。
+
+```ini
+# hosts.ini
+testserver ansible_host=127.0.0.1 ansible_port=2222 ansible_user=vagrant ansible_private_key_file=.vagrant/machines/default/virtualbox/private_key
+```
+
+這邊有一個缺點，你會看到我們需要在為每一個 host 加上一堆參數，之後能夠改善。
+
+如果是 Amazon EC2 的 host 可以寫成這樣：
+
+```ini
+# hosts.ini
+ testserver ansible_host=ec2-203-0-113-120.compute-1.amazonaws.com ansible_user=ubuntu ansible_private_key_file=/path/to/keyfile.pem
+```
+
+這時候可以使用 `ansible` 的指令連到 `testserver`，傳入 `hosts.ini` 檔案跟呼叫 `ping` 的 module：
+
+```shell
+ansible testserver -i hosts.ini -m ping
+```
+
+成功畫面會像這樣：
+
+```shell
+$ ansible testserver -i hosts.ini -m ping
+testserver | SUCCESS => {
+    "changed": false, 
+    "ping": "pong"
+}
+```
+
+詳細 log 檔的話，在後面加上 `-vvvv`：
+
+```shell
+ansible testserver -i hosts.ini -m ping -vvvv
+```
+
+`"changed": false` 這行的意思是，執行這個 module 不會改變 server 的任何狀態。`"ping": "pong"` 是 ping 這個 module 所顯示的輸出。
+
+Ping module 很常用來測試 server 的 ssh 有沒有正常運作。
+
