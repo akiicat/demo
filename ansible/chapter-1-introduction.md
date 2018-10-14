@@ -289,3 +289,113 @@ ansible testserver -i hosts.ini -m ping -vvvv
 
 Ping module 很常用來測試 server 的 ssh 有沒有正常運作。
 
+### 用 ansible.cfg 簡化
+
+*ansible.cfg* 可以簡化 inventory file，他會預設一些設定，在 inventory file 就可以不用打那麼多字。
+
+*ansible.cfg* 會依照以下的順序下去找尋：
+
+1. 環境變數 ANSIBLE_CONFIG
+2. *./ansible.cfg*
+3. *~/ansible.cfg*
+4. */etc/ansible/ansible.cfg*
+
+範例把 SSH host-key 檢查關掉，這樣每次 SSH 的時候不會去檢查 *~/.ssh/known_hosts*，不過會有安全性的問題。
+
+```cfg
+[defaults]
+inventory = hosts
+remote_user = vagrant
+private_key_file = .vagrant/machines/default/virtualbox/private_key
+host_key_checking = False
+```
+
+不建議使用 */etc/ansible/hosts* 因為不好做版本控制。
+
+這樣設定完之後，在 *hosts* 檔案裡面，只需要這樣：
+
+```shell
+# hosts
+testserver ansible_host=127.0.0.1 ansible_port=2222
+```
+
+呼叫 Ansible 也不需要傳入 `-i hostname` 參數：
+
+```shell
+ansible testserver -m ping
+```
+
+可以使用 `command` 模組，然後用 `-a` 傳入參數：
+
+```shell
+ansible testserver -m command -a uptime
+```
+
+輸出如下：
+
+```shell
+$ ansible testserver -m command -a uptime
+testserver | CHANGED | rc=0 >>
+ 11:50:07 up 23:02,  1 user,  load average: 0.00, 0.01, 0.05
+```
+
+因為 `command` 的指令太常使用了，所以可以省略不寫：
+
+```shell
+ansible testserver -a uptime
+```
+
+如果 `command` 裡面有包含空格的話，要用分號包起來：
+
+```shell
+ansible testserver -a "tail /var/log/dmesg"
+```
+
+輸出如下：
+
+```shell
+$ ansible testserver -a "tail /var/log/dmesg"
+testserver | CHANGED | rc=0 >>
+[    8.925516] type=1400 audit(1539196766.928:9): apparmor="STATUS" operation="profile_replace" profile="unconfined" name="/usr/lib/NetworkManager/nm-dhcp-client.action" pid=1017 comm="apparmor_parser"
+[    8.925520] type=1400 audit(1539196766.928:10): apparmor="STATUS" operation="profile_replace" profile="unconfined" name="/usr/lib/connman/scripts/dhclient-script" pid=1017 comm="apparmor_parser"
+[    9.055594] type=1400 audit(1539196767.056:11): apparmor="STATUS" operation="profile_load" profile="unconfined" name="/usr/sbin/tcpdump" pid=1019 comm="apparmor_parser"
+[    9.110631] vboxvideo: Unknown symbol drm_open (err 0)
+...
+```
+
+如果需要 root 權限，加上 `-b` 參數就會變成 root 使用者。舉例來說，要存取 */var/log/syslog* 需要 root 的權限：
+
+```shell
+ansible testserver -b -a "tail /var/log/syslog"
+```
+
+```shell
+$ ansible testserver -a "tail /var/log/syslog"
+testserver | FAILED | rc=1 >>
+tail: cannot open ‘/var/log/syslog’ for reading: Permission deniednon-zero return code
+
+
+$ ansible testserver -b -a "tail /var/log/syslog"
+testserver | CHANGED | rc=0 >>
+Oct 14 11:47:33 vagrant-ubuntu-trusty-64 puppet-agent[1285]: message repeated 15 times: [ Could not request certificate: getaddrinfo: Name or service not known]
+...
+```
+
+還有其他的模組，如果你要在 Ubuntu 上面安裝 Nginx 的話，可以使用 `apt`：
+
+```shell
+ansible testserver -b -m apt -a name=nginx
+```
+
+如果安裝失敗的話，要在安裝之前更新 `apt-get update`，在後面加上 `update_cache=yes` 就行：
+
+```shell
+ansible testserver -b -m apt -a "name=nginx update_cache=yes"
+```
+
+然後重新啟動 Nginx 的服務：
+
+```shell
+ansible testserver -b -m service -a "name=nginx state=restarted"
+```
+
