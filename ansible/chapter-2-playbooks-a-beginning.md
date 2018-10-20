@@ -418,3 +418,209 @@ Ansible 也支援舊格式 `action` 的寫法：
 ansible-doc service
 ```
 
+### 有任何東西改變嗎
+
+黃色的字是通知有東西改變：
+
+```shell
+TASK [copy nginx config file] ***************************************************************
+changed: [testserver]
+```
+
+狀態 `ok` 會以綠色的字顯示：
+
+```shell
+TASK [enable configuration] *****************************************************************
+ok: [testserver]
+```
+
+在對 hosts 做變更的時候，Ansible 會先對 host 檢查是否需要做變更，如果符合參數的話，就會回傳 `ok`。
+
+相反的，如果參數不符合的話，Ansible 就會對 host 做改變，然後回傳 `changed`。
+
+Ansible 會先檢查 state，然後透過 *handlers* 觸發而外的行動。
+
+## 支援 TLS
+
+更複雜的例子，讓 web server 支援 TLS，有新的功能：
+
+- Varibales
+- Handlers
+
+```yaml
+# web-tls.yml 
+- name: Configure webserver with nginx and tls
+  hosts: webservers
+  become: True
+  vars:
+    key_file: /etc/nginx/ssl/nginx.key
+    cert_file: /etc/nginx/ssl/nginx.crt
+    conf_file: /etc/nginx/sites-available/default
+    server_name: localhost
+  tasks:
+    - name: Install nginx
+      apt: name=nginx update_cache=yes cache_valid_time=3600
+      
+    - name: create directories for TLS certificates
+      file: path=/etc/nginx/ssl state=directory
+      
+    - name: copy TLS key
+      copy: src=files/nginx.key dest={{ key_file }} owner=root mode=0600
+      notify: restart nginx
+      
+    - name: copy TLS certificate
+      copy: src=files/nginx.crt dest={{ cert_file }}
+      notify: restart nginx
+      
+    - name: copy nginx config file
+      template: src=templates/nginx.conf.j2 dest={{ conf_file }}
+      notify: restart nginx
+      
+    - name: enable configuration
+      file: dest=/etc/nginx/sites-enabled/default src={{ conf_file }} state=link
+      notify: restart nginx
+      
+    - name: copy index.html
+      template: src=templates/index.html.j2 dest=/usr/share/nginx/html/index.html mode=0644
+      
+  handlers:
+    - name: restart nginx
+      service: name=nginx state=restarted
+```
+
+### 產生 TLS Certification
+
+在 production 環境要去買 TLS 的憑證，或是使用免費的 Let's Encrypt，Ansible 提供 `letsencrypt` 的套件。這邊我們自己產生憑證：
+
+```shell
+mkdir files
+openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -subj /CN=localhost \
+        -keyout files/nginx.key -out files/nginx.crt
+```
+
+這樣就能產生 *nginx.key* 跟 *nginx.crt* 的檔案，有效期限是 10 年，從你建立的那一刻開始算起。
+
+### Variables
+
+剛剛上面有我們設定的參數：
+
+```yaml
+  vars:
+    key_file: /etc/nginx/ssl/nginx.key
+    cert_file: /etc/nginx/ssl/nginx.crt
+    conf_file: /etc/nginx/sites-available/default
+    server_name: localhost
+```
+
+Ansible 會參數放到 `{{ braces }}` 裡面
+
+#### 什麼時候需要雙引號
+
+下面這個例子，Ansible 解析的時候會出錯，因為他並不知道 `myapp` 的參數：
+
+```yaml
+- name: perform some task
+  command: {{ myapp }} -a foo
+```
+
+但是如果是這樣的話就不會了
+
+```yaml
+- name: perform some task
+  command: "{{ myapp }} -a foo"
+```
+
+另一個是 debug 的例子：
+
+```yaml
+- name: show a debug message
+  debug: msg="The debug module will print a message: neat, eh?"
+```
+
+如果用外面用雙引號刮起來的話：
+
+```yaml
+- name: show a debug message
+  debug: "msg=The debug module will print a message: neat, eh?"
+```
+
+錯誤訊息只會有第一個字
+
+```json
+{
+    "msg": "The"
+}
+```
+
+所以要在裡面的加上單引號：
+
+```yaml
+- name: show a debug message
+  debug: "msg='The debug module will print a message: neat, eh?'"
+```
+
+### 產生 Nginx 設定檔的 Template
+
+將重複的東西寫成 template，只需要取代掉裡面設定的資訊：
+
+```jinja2
+# templates/nginx.conf.j2 
+server {
+        listen 80 default_server;
+        listen [::]:80 default_server ipv6only=on;
+
+        listen 443 ssl;
+
+        root /usr/share/nginx/html;
+        index index.html index.htm;
+
+        server_name {{ server_name }};
+        ssl_certificate {{ cert_file }};
+        ssl_certificate_key {{ key_file }};
+
+        location / {
+                try_files $uri $uri/ =404;
+        }
+}
+```
+
+Ansible 使用 Jinja2 的 Template 引擎，舊的 Ansible 是使用 `$` 當作參數，剩下的可以看[Jinja2 的文件](http://jinja.pocoo.org/docs/dev/templates/)
+
+### Handlers
+
+Handlers 跟 tasks 很像：
+
+```yaml
+  handlers:
+    - name: restart nginx
+      service: name=nginx state=restarted
+```
+
+有包含 `notify` 的 task，只要狀態是有改變 `changed`，就會去觸發 handler
+
+```yaml
+    - name: copy TLS key
+      copy: src=files/nginx.key dest={{ key_file }} owner=root mode=0600
+      notify: restart nginx
+```
+
+#### handler 需要注意的地方
+
+handler 通常都會在 task 之後執行，而且只會執行一次，即便你 notify 很多次，如果有很多的 handler，就會依序地執行，執行順序是依照 `handler` 裡面的順序，不是 `notify` 的順序。
+
+在 Ansible 官方文件裡面，有說他們最常用 handler 來重新開啟 service 或是重新啟動。
+
+通常會用來重新啟動 service，因為 reboot 可以寫在 task 的最後面，而且重新啟動 service 不會花很久的時間。
+
+如果 task 沒有更動的話，就不會 notify hanlder。
+
+### 運行 Playbook
+
+使用 `ansible-playbook` 運行 playbook：
+
+```shell
+ansible-playbook web-tls.yml
+```
+
+使用瀏覽器開啟 *https://localhost:8443/*，不要忘記 https 有個 s。
