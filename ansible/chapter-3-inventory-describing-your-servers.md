@@ -215,3 +215,120 @@ vagrant3
 
 ### 範例：部署 Django
 
+我們需要分 production、staging、vagrant 的群組，另外還有 web、task、RabbitMQ、Postgre 的群組。範例 inventory file 的參考寫法：
+
+```ini
+inventory/hosts 
+[production]
+delaware.example.com
+georgia.example.com
+maryland.example.com
+newhampshire.example.com
+newjersey.example.com
+newyork.example.com
+northcarolina.example.com
+pennsylvania.example.com
+rhodeisland.example.com
+virginia.example.com
+
+[staging]
+ontario.example.com
+quebec.example.com
+
+[vagrant]
+vagrant1 ansible_host=127.0.0.1 ansible_port=2222
+vagrant2 ansible_host=127.0.0.1 ansible_port=2200
+vagrant3 ansible_host=127.0.0.1 ansible_port=2201
+
+[lb]
+delaware.example.com
+
+[web]
+georgia.example.com
+newhampshire.example.com
+newjersey.example.com
+ontario.example.com
+vagrant1
+
+[task]
+newyork.example.com
+northcarolina.example.com
+maryland.example.com
+ontario.example.com
+vagrant2
+
+[rabbitmq]
+pennsylvania.example.com
+quebec.example.com
+vagrant3
+
+[db]
+rhodeisland.example.com
+virginia.example.com
+quebec.example.com
+vagrant3
+```
+
+我們不需要在前面把不分群組的 server 重新寫過一次，因為沒有必要，而且會讓 server 看起來更長。
+
+### Aliases 跟 Ports
+
+```ini
+[vagrant]
+vagrant1 ansible_host=127.0.0.1 ansible_port=2222
+vagrant2 ansible_host=127.0.0.1 ansible_port=2200
+vagrant3 ansible_host=127.0.0.1 ansible_port=2201
+```
+
+`vagrant1` `vagrant2` `vagrant3` 這些是匿名，並不是真的 hostname，但可以使用這些名字來連到 server。
+
+Ansible 也支援 `<hostname>:<port>` 語法，所以可以把 `vagrant1` 改成 `127.0.0.1:2222`，但是不會正常運作：
+
+```ini
+[vagrant]
+127.0.0.1:2222
+127.0.0.1:2200
+127.0.0.1:2201
+```
+
+因為 Ansible 只會把其中一個 host 跟 127.0.0.1 做連結，所以 vagrant 這個群組只會有一個 host 而不是 3 個。
+
+### Groups 中 Groups
+
+我們可以定義 `django` 這個群組，包含 web 和 task 的群組， 
+
+```ini
+[django:children]
+web
+task
+```
+
+注意我們在命名群組中的群組的格式不同，這樣 Ansible 才知道 `web` 跟 `task` 是 groups 而不是 hosts。
+
+### 有順序的 Hosts (Pets vs Cattle)
+
+在現實的狀況下，你的 server 會 scale-out，假設你的 server 有 15 個，你不必在 inventory file 寫 15 次。
+
+Bill Baker of Microsoft 想到對待 server 要像 pets 還是要像 cattles 的差別，我們會給寵物單獨的名字，而且會獨自照顧他，相反的，牛會給他一個唯一的編號，參考[Pets vs Cattle](https://www.slideshare.net/randybias/pets-vs-cattle-the-elastic-cloud-story)。
+
+Cattle 比較能夠 scalable，如果你有 20 個 servers 命名像是 *web1.example.com*, *web2.example.com*，在 inventory file 你可以寫成：
+
+```ini
+[web]
+web[1:20].example.com
+```
+
+如果你預設是兩個字元的數字，以 0 開頭的話：
+
+```ini
+[web]
+web[01:20].example.com
+```
+
+如果你的 server 是用英文字母命名的話，像是前 20 個英文字母 *web-a.example.com*, *web-b.example.com*：
+
+```ini
+[web]
+web-[a-t].example.com
+```
+
