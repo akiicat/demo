@@ -7,23 +7,23 @@
 ```shell
 docker ps -aq # 列出所有 container id
 
-docker stop $(docker ps -aq) # 停止所有 container
+docker ps -q | xargs docker stop # 停止所有 container
 
-docker rm $(docker ps -aq) # 移除所有 container
+docker ps -aq | xargs docker rm # 移除所有 container
 ```
 
 ### images
 
 ```shell
-docker rmi $(docker images -f dangling=true -q) # 移除標籤為 <none> 的 images
+docker images -f dangling=true -q | xargs docker rmi # 移除標籤為 <none> 的 images
 
-docker rmi $(docker images -q) # 移除所有 images
+docker images -q | xargs docker rmi # 移除所有 images
 ```
 
 ### Volumes
 
 ```shell
-docker volume rm $(docker volume ls -q --filter dangling=true)
+docker volume ls -qf dangling=true | xargs docker volume rm
 ```
 
 ## Trouble Shoot
