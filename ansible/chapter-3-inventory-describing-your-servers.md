@@ -332,3 +332,333 @@ web[01:20].example.com
 web-[a-t].example.com
 ```
 
+## Host 和 Group 有他們自己的檔案
+
+當你的 host 和 group 越來越多的時候，會變得越難管理。
+
+Ansible 提供了延伸性的方法來記錄 host 和 group 的變數，在路徑下建立不同的 host 和 group，使用的格式是 YAML。
+
+Ansible 會找尋 *host_vars* 資料夾底下 host variable 的檔案，跟 *group_vars* 資料夾底下的 group variable 的檔案，Ansible  希望你把這些資料夾跟 inventory file 放在同一個地方。
+
+```shell
+$ tree
+.
+├── Vagrantfile
+├── ansible.cfg
+└── group_vars
+    └── production
+```
+
+像是這個 group file：
+
+```yaml
+# group_vars/production
+---
+db_primary_host: rhodeisland.example.com
+db_replica_host: virginia.example.com
+db_name: widget_production
+db_user: widgetuser
+db_password: pFmMxcyD;Fc6)6
+rabbitmq_host: pennsylvania.example.com
+```
+
+可以代表這樣：
+
+```yaml
+# group_vars/production
+db:
+    user: widgetuser
+    password: pFmMxcyD;Fc6)6
+    name: widget_production
+    primary:
+        host: rhodeisland.example.com
+        port: 5432
+    replica:
+        host: virginia.example.com
+        port: 5432
+rabbitmq:
+    host: pennsylvania.example.com
+    port: 5672
+```
+
+拿取參數的話分別用：
+
+```
+{{ db_primary_host }}
+{{ db.primary.host }}
+```
+
+Ansible 也允許你在資料夾裡面又在建立一個資料夾
+
+```yaml
+# group_vars/production/db
+db:
+    user: widgetuser
+    password: pFmMxcyD;Fc6)6
+    name: widget_production
+    primary:
+        host: rhodeisland.example.com
+        port: 5432
+    replica:
+        host: virginia.example.com
+        port: 5432
+        
+# group_vars/production/rabbitmq
+rabbitmq:
+    host: pennsylvania.example.com
+    port: 5672
+```
+
+普遍來說，只需要讓你的變數保持簡單就行，不一定要分太多的資料夾。
+
+## Dynamic Inventory
+
+到目前為止，我們把 server 記錄在 inventory file，但是如果你同時使用不同的平台的 hosts，像是 Amazon EC2，你可以透過 `awscli` 知道你 server 狀態，如果你是使用自己管理的 server，可以使用像是 Cobbler 或是 Ubuntu Metal as a Service (MAAS)，來記錄你 server 的狀態，或是使用 configuration management database (CMDBs) 知道即時的資訊。
+
+所以 Ansible 支援 *dynamic inventory*，避免你手動複製 host 的訊息。
+
+### Dynamic Inventory 腳本介面
+
+大多的 dynamic inventory script 支援這兩個指令：
+
+- `--host=<hostname>`：顯示 host 詳細資訊
+- `--list`：列出群組
+
+#### 顯示 host 詳細資訊
+
+要獲得特定 host 的詳細資料：
+
+```shell
+./vagrant.py --host=vagrant2
+```
+
+輸出會是 JSON 格式：
+
+```json
+{  
+   "ansible_ssh_host":"127.0.0.1",
+   "ansible_ssh_port":"2200",
+   "ansible_ssh_user":"vagrant",
+   "ansible_ssh_private_key_file":"/Users/akiicat/.vagrant.d/insecure_private_key"
+}
+```
+
+#### 列出群組
+
+列出所有 group 的 host：
+
+```shell
+./vagrant.py --list
+```
+
+輸出同樣是 JSON 格式，在 `_meta` 會包含所有獨自 hosts 的資訊：
+
+```json
+{  
+   "vagrant":[  
+      "vagrant1",
+      "vagrant3",
+      "vagrant2"
+   ],
+   "_meta":{  
+      "hostvars":{  
+         "vagrant1":{  
+            "ansible_ssh_host":"127.0.0.1",
+            "ansible_ssh_port":"2222",
+            "ansible_ssh_user":"vagrant",
+            "ansible_ssh_private_key_file":"/Users/akiicat/.vagrant.d/insecure_private_key"
+         },
+         "vagrant3":{  
+            "ansible_ssh_host":"127.0.0.1",
+            "ansible_ssh_port":"2201",
+            "ansible_ssh_user":"vagrant",
+            "ansible_ssh_private_key_file":"/Users/akiicat/.vagrant.d/insecure_private_key"
+         },
+         "vagrant2":{  
+            "ansible_ssh_host":"127.0.0.1",
+            "ansible_ssh_port":"2200",
+            "ansible_ssh_user":"vagrant",
+            "ansible_ssh_private_key_file":"/Users/akiicat/.vagrant.d/insecure_private_key"
+         }
+      }
+   }
+}
+```
+
+### 撰寫 Dynamic Inventory 腳本
+
+如果使用 `vagrant status` 指令輸出像這樣：
+
+```shell
+$ vagrant status
+Current machine states:
+
+vagrant1                  running (virtualbox)
+vagrant2                  running (virtualbox)
+vagrant3                  running (virtualbox)
+
+This environment represents multiple VMs. The VMs are all listed
+above with their current state. For more information about a specific
+VM, run `vagrant status NAME`.
+```
+
+Vagrant 已經紀錄有哪些機器，我們不需要在自己寫，而我們只需要自己寫 inventory file script，詢問正在運行的機器。一旦寫好腳本，不管 Vagrantfile 機器怎麼變，都不需要改動 Ansible inventory file。
+
+我們的 dynamic inventory file 會試著解析指令
+
+```shell
+vagrant status --machine-readable
+```
+
+輸出如下，可以知道所有的機器：
+
+```shell
+1540128277,vagrant1,metadata,provider,virtualbox
+1540128277,vagrant2,metadata,provider,virtualbox
+1540128278,vagrant3,metadata,provider,virtualbox
+1540128278,vagrant1,provider-name,virtualbox
+1540128278,vagrant1,state,running
+1540128278,vagrant1,state-human-short,running
+1540128278,vagrant1,state-human-long,The VM is running. To stop this VM%!(VAGRANT_COMMA) you can run `vagrant halt` to\nshut it down forcefully%!(VAGRANT_COMMA) or you can run `vagrant suspend` to simply\nsuspend the virtual machine. In either case%!(VAGRANT_COMMA) to restart it again%!(VAGRANT_COMMA)\nsimply run `vagrant up`.
+1540128279,vagrant2,provider-name,virtualbox
+1540128279,vagrant2,state,running
+1540128279,vagrant2,state-human-short,running
+1540128279,vagrant2,state-human-long,The VM is running. To stop this VM%!(VAGRANT_COMMA) you can run `vagrant halt` to\nshut it down forcefully%!(VAGRANT_COMMA) or you can run `vagrant suspend` to simply\nsuspend the virtual machine. In either case%!(VAGRANT_COMMA) to restart it again%!(VAGRANT_COMMA)\nsimply run `vagrant up`.
+1540128279,vagrant3,provider-name,virtualbox
+1540128279,vagrant3,state,running
+1540128279,vagrant3,state-human-short,running
+1540128279,vagrant3,state-human-long,The VM is running. To stop this VM%!(VAGRANT_COMMA) you can run `vagrant halt` to\nshut it down forcefully%!(VAGRANT_COMMA) or you can run `vagrant suspend` to simply\nsuspend the virtual machine. In either case%!(VAGRANT_COMMA) to restart it again%!(VAGRANT_COMMA)\nsimply run `vagrant up`.
+1540128279,,ui,info,Current machine states:\n\nvagrant1                  running (virtualbox)\nvagrant2                  running (virtualbox)\nvagrant3                  running (virtualbox)\n\nThis environment represents multiple VMs. The VMs are all listed\nabove with their current state. For more information about a specific\nVM%!(VAGRANT_COMMA) run `vagrant status NAME`.
+```
+
+為了拿到某台機器的詳細訊息：
+
+```shell
+vagrant ssh-config vagrant2
+```
+
+```shell
+Host vagrant2
+  HostName 127.0.0.1
+  User vagrant
+  Port 2200
+  UserKnownHostsFile /dev/null
+  StrictHostKeyChecking no
+  PasswordAuthentication no
+  IdentityFile /Users/akiicat/.vagrant.d/insecure_private_key
+  IdentitiesOnly yes
+  LogLevel FATAL
+```
+
+dynamic inventory file 會呼叫這些指令，解析裡面的內容，轉換成 JSON 格式
+
+### 已經存在的 Inventory Script
+
+可以到 [Ansible GitHub repo](https://github.com/ansible/ansible/tree/devel/contrib/inventory) 裡面的 *contrib/inventory* 目錄下找現有的腳本。
+
+## 把 Inventory 拆成很多的檔案
+
+如果你同時有正常的 inventory file 跟 dynamic inventory 腳本，把他們放在相同的資料夾裡面，然後透過 *ansible.cfg* 裡的 `inventory` 參數，或是在打指令的時候用 `-i` flag。Ansible 會把所有的檔案合併成一個 inventory。
+
+```ini
+# ansible.cfg 
+[defaults]
+inventory = inventory
+```
+
+
+
+### 在運行中使用 add_host 跟 group_by 增加 Entries
+
+Ansible 允許你在執行 playbook 的時候增加 hosts 和 groups。
+
+#### add_host
+
+如果你用在 IAAS 上的虛擬機，這個功能實用。
+
+即使你使用 dynamic inventory script，這個功能依然很實用，在你新增了一台機器的時候然後要設定它。
+
+如果新的 host 在 playbook 運行的時候上線了，這個腳本並不會執行這台 host，因為 dynamic inventory script 會在 playbook 一開始的時候執行，所以當 playbook 在運行的時候，Ansible 會找不到新的 hosts。
+
+呼叫 module 長得像這樣：
+
+```ini
+add_host name=hostname groups=web,staging myvar=myval
+```
+
+這是 `add_host` 指令的腳本，可以設定新開的機器：
+
+```yaml
+ - name: Provision a vagrant machine
+      hosts: localhost
+      vars:
+        box: trusty64
+      tasks:
+        - name: create a Vagrantfile
+          command: vagrant init {{ box }} creates=Vagrantfile
+          
+        - name: Bring up a vagrant machine
+          command: vagrant up
+          
+        - name: add the vagrant machine to the inventory
+          add_host: >
+                name=vagrant
+                ansible_host=127.0.0.1
+                ansible_port=2222
+                ansible_user=vagrant
+                ansible_private_key_file=/Users/lorin/.vagrant.d/
+                insecure_private_key
+                
+    - name: Do something to the vagrant machine
+      hosts: vagrant
+      become: yes
+      tasks:
+        # The list of tasks would go here
+        -  ...
+```
+
+這個腳本是跑在本地端的腳本，另外我們在 task 裡面使用 `creates=Vagrantfile` 參數：
+
+```yaml
+- name: create a Vagrantfile
+  command: vagrant init {{ box }} creates=Vagrantfile
+```
+
+這個會告訴 Ansible 說，如果 *Vagrantfile* 這個檔案存在的話，就不要再執行這個指令，確保這個指令只會執行一次 (idempotence)。
+
+#### group_by
+
+Ansible 也可以在運行的時候執行 playbook，使用 `group_by` 這個 module。
+
+如果 group 會有不同的機器，像是 `asnible_machine` 參數有 `i386` (32-bit x86) 和 `x84_64` (64-bit x84)，可以讓群組的機器，在同一個指令裡面分辨使用不同的參數。
+
+如果是使用不同的 Linux 系統，像是 Ubuntu, CentOS，可以使用 `ansible_distribution`：
+
+```yaml
+- name: create groups based on distro
+  group_by: key={{ ansible_distribution }}
+```
+
+我們可以使用 `group_by` 建立 Ubuntu 的 hosts 跟 CentOS 的 hosts，然後分別使用 `apt` module 跟 `yum` module 安裝套件。
+
+```yaml
+- name: group hosts by distribution
+  hosts: myhosts
+  gather_facts: True
+  tasks:
+    - name: create groups based on distro
+      group_by: key={{ ansible_distribution }}
+- name: do something to Ubuntu hosts
+  hosts: Ubuntu
+  tasks:
+    - name: install htop
+      apt: name=htop
+    # ...
+- name: do something else to CentOS hosts
+  hosts: CentOS
+  tasks:
+    - name: install htop
+      yum: name=htop
+    # ...
+```
+
