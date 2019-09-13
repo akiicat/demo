@@ -767,9 +767,32 @@ function Logger(name) {
 
 這個 code 的跟前一個相同，`new.target` 這個也是 ES2015 的糖衣語法。
 
+### Exporting an Instance
 
+利用 `require()` cache 的機制，可以間單的從 constructor 或 factory 建立有狀態的 instance，可以傳入不同的 modules 之間：
 
+```js
+//file logger.js 
+function Logger(name) { 
+  this.count = 0; 
+  this.name = name; 
+} 
+Logger.prototype.log = function(message) { 
+  this.count++; 
+  console.log('[' + this.name + '] ' + message); 
+}; 
+module.exports = new Logger('DEFAULT'); 
+```
 
+可以這樣使用：
+
+```js
+//file main.js 
+const logger = require('./logger'); 
+logger.log('This is an informational message'); 
+```
+
+因為 module 已經被 cache 了，所以需要 `logger` 的每個 module 都會共享物件相同的狀態
 
 
 
