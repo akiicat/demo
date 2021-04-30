@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 
 /*
  * padding = (align - (offset mod align)) mod align
@@ -62,6 +63,7 @@ int main() {
     
     uint32_t arr[6] = { 0 };
 
+    /* align to the maximum element */
     printf("%lu\n", sizeof(struct MixedData)); // 12
     
     struct MixedData a;
